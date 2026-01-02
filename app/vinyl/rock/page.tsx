@@ -1,3 +1,12 @@
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Rock Vinyl Deals | Vinyl Deals",
+  description:
+    "Find rock vinyl record deals from Amazon (US). New deals will appear automatically once the feed is active.",
+};
+
+
 import Link from "next/link";
 
 export default function RockVinylDealsPage() {

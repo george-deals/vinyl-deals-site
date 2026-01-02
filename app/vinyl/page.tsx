@@ -1,3 +1,12 @@
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Vinyl Deals by Genre | Vinyl Deals",
+  description:
+    "Browse Amazon (US) vinyl record deals by genre: rock, hip-hop, jazz, soundtracks, pop, metal, country, classical, electronic, and R&B/soul.",
+};
+
+
 import Link from "next/link";
 
 export default function VinylHubPage() {
