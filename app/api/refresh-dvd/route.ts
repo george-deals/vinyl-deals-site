@@ -14,7 +14,7 @@ type DealRow = {
   currency: string | null;
   discount_pct: number | null;
   is_under_20: boolean;
-  category: string;
+  category: string; // "media"
   media_type: string; // "dvd"
   sales_rank: number | null;
   updated_at: string;
@@ -32,11 +32,14 @@ function safeNum(n: any): number | null {
   return Number.isFinite(x) ? x : null;
 }
 
-function computeDiscountPct(priceCents: number | null, listCents: number | null): number | null {
+function computeDiscountPct(
+  priceCents: number | null,
+  listCents: number | null
+): number | null {
   if (priceCents == null || listCents == null) return null;
   if (listCents <= 0 || priceCents <= 0) return null;
   if (priceCents >= listCents) return null;
-  return Math.round(((listCents - priceCents) / listCents) * 1000) / 10;
+  return Math.round(((listCents - priceCents) / listCents) * 1000) / 10; // 1 decimal
 }
 
 async function paapiSearch(keyword: string) {
@@ -85,8 +88,14 @@ async function paapiSearch(keyword: string) {
     { accessKeyId: accessKey, secretAccessKey: secretKey }
   );
 
+  // ✅ FIX: convert aws4 headers to a plain string map for axios (TypeScript-safe)
+  const axiosHeaders: Record<string, string> = {};
+  for (const [k, v] of Object.entries(signed.headers || {})) {
+    if (typeof v === "string") axiosHeaders[k] = v;
+  }
+
   const resp = await axios.post(url, signed.body, {
-    headers: signed.headers,
+    headers: axiosHeaders,
     timeout: 15000,
     validateStatus: () => true,
   });
@@ -97,12 +106,13 @@ async function paapiSearch(keyword: string) {
 export async function GET(req: Request) {
   const url = new URL(req.url);
 
+  // token auth
   const token = url.searchParams.get("token");
   if (!token || token !== process.env.REFRESH_TOKEN) {
     return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  // DVD keywords
+  // DVD keywords (simple baseline)
   const keywords = ["DVD", "new DVD", "DVD movie", "DVD disc"];
 
   const nowIso = new Date().toISOString();
@@ -148,7 +158,9 @@ export async function GET(req: Request) {
       if (seen.has(asin)) continue;
 
       const title: string | null =
-        item?.ItemInfo?.Title?.DisplayValue || item?.ItemInfo?.Title?.Label || null;
+        item?.ItemInfo?.Title?.DisplayValue ||
+        item?.ItemInfo?.Title?.Label ||
+        null;
 
       const imageUrl: string | null = item?.Images?.Primary?.Large?.URL || null;
 
@@ -162,11 +174,15 @@ export async function GET(req: Request) {
       const discountPct = computeDiscountPct(priceCents, listCents);
       const isUnder20 = priceCents !== null && priceCents <= 2000;
 
+      // Require discount >= 15%
       const qualifies = discountPct !== null && discountPct >= 15;
       if (!qualifies) continue;
 
+      // Website sales rank (lower is better)
       const salesRankRaw = item?.BrowseNodeInfo?.WebsiteSalesRank?.SalesRank;
-      const salesRank = Number.isFinite(Number(salesRankRaw)) ? Number(salesRankRaw) : null;
+      const salesRank = Number.isFinite(Number(salesRankRaw))
+        ? Number(salesRankRaw)
+        : null;
 
       const amazonUrl = `https://www.amazon.com/dp/${asin}?tag=${process.env.AMAZON_PARTNER_TAG}`;
 
@@ -190,6 +206,7 @@ export async function GET(req: Request) {
     }
   }
 
+  // Sort: best sellers first (lowest rank), then highest discount, then newest
   all.sort((a, b) => {
     const ra = a.sales_rank ?? Number.MAX_SAFE_INTEGER;
     const rb = b.sales_rank ?? Number.MAX_SAFE_INTEGER;
@@ -204,7 +221,9 @@ export async function GET(req: Request) {
 
   const top50 = all.slice(0, 50);
 
-  const { error } = await supabaseAdmin.from("deals").upsert(top50, { onConflict: "asin" });
+  const { error } = await supabaseAdmin.from("deals").upsert(top50, {
+    onConflict: "asin",
+  });
 
   if (error) {
     return Response.json({ ok: false, error: error.message }, { status: 500 });
