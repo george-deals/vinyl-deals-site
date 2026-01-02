@@ -187,8 +187,8 @@ const items: any[] =
       const currency = listing?.Price?.Currency ?? null;
 
       const listAmount = safeNum(listing?.SavingBasis?.Amount);
-      const priceCents = toCents(priceAmount);
-      const listCents = toCents(listAmount);
+      const priceCents = toCents(priceAmount ?? 0);
+      const listCents = toCents(listAmount ?? 0);
 
      const discountPct = computeDiscountPct(priceCents, listCents);
 const isUnder20 = priceCents !== null && priceCents <= 2000;
