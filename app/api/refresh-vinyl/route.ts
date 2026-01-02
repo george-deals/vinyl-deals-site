@@ -23,10 +23,10 @@ type DealRow = {
   updated_at: string;
 };
 
-function toCents(amount?: number): number | null {
-  if (typeof amount !== "number" || !isFinite(amount)) return null;
-  return Math.round(amount * 100);
+function toCents(n?: number | null) {
+  return Math.round((n ?? 0) * 100);
 }
+
 
 function safeNum(n: any): number | null {
   const x = Number(n);
@@ -187,8 +187,9 @@ const items: any[] =
       const currency = listing?.Price?.Currency ?? null;
 
       const listAmount = safeNum(listing?.SavingBasis?.Amount);
-      const priceCents = toCents(priceAmount ?? 0);
-      const listCents = toCents(listAmount ?? 0);
+      const priceCents = toCents(priceAmount);
+      const listCents = toCents(listAmount);
+
 
      const discountPct = computeDiscountPct(priceCents, listCents);
 const isUnder20 = priceCents !== null && priceCents <= 2000;
