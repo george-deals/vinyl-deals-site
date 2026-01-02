@@ -3,7 +3,7 @@ import Link from "next/link";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 export const metadata: Metadata = {
-  title: "Top CD Deals (Amazon US) | Vinyl Deals",
+  title: "Top CD Deals (Amazon US) | CD Deals",
   description:
     "Top CD deals from Amazon US. Updated daily. We track listings discounted at least 15% and surface the top savings in one place.",
 };
