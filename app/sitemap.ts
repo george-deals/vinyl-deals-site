@@ -1,14 +1,14 @@
 import { MetadataRoute } from "next";
 import { headers } from "next/headers";
 
-export default function sitemap(): MetadataRoute.Sitemap {
-  const h = headers();
+export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  const h = await headers();
 
-  const host =
+  const siteUrl =
     process.env.NEXT_PUBLIC_SITE_URL ??
     `https://${h.get("x-forwarded-host") || h.get("host")}`;
 
-  const siteUrl = host.replace(/\/$/, "");
+  const cleanSiteUrl = siteUrl.replace(/\/$/, "");
 
   const staticRoutes = [
     "",
@@ -37,7 +37,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   for (const path of staticRoutes) {
     routes.push({
-      url: `${siteUrl}${path}`,
+      url: `${cleanSiteUrl}${path}`,
       lastModified: new Date(),
       changeFrequency: "daily",
       priority: path === "" ? 1.0 : 0.8,
@@ -46,7 +46,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   for (const genre of vinylGenres) {
     routes.push({
-      url: `${siteUrl}/vinyl/${genre}`,
+      url: `${cleanSiteUrl}/vinyl/${genre}`,
       lastModified: new Date(),
       changeFrequency: "daily",
       priority: 0.7,
