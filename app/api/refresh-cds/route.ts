@@ -85,11 +85,17 @@ async function paapiSearch(keyword: string) {
     { accessKeyId: accessKey, secretAccessKey: secretKey }
   );
 
-  const resp = await axios.post(url, signed.body, {
-    headers: signed.headers,
-    timeout: 15000,
-    validateStatus: () => true,
-  });
+  const axiosHeaders: Record<string, string> = {};
+for (const [k, v] of Object.entries(signed.headers || {})) {
+  if (typeof v === "string") axiosHeaders[k] = v;
+}
+
+const resp = await axios.post(url, signed.body, {
+  headers: axiosHeaders,
+  timeout: 15000,
+  validateStatus: () => true,
+});
+
 
   return { status: resp.status, data: resp.data };
 }
