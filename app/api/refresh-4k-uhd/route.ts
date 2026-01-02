@@ -4,33 +4,6 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 export const runtime = "nodejs";
 
-type GenreSlug =
-  | "all"
-  | "rock"
-  | "hip-hop"
-  | "jazz"
-  | "soundtracks"
-  | "pop"
-  | "metal"
-  | "country"
-  | "classical"
-  | "electronic"
-  | "rnb-soul";
-
-const GENRE_KEYWORDS: Record<GenreSlug, string[]> = {
-  all: ["vinyl", "vinyl records", "LP", "new vinyl record"],
-  rock: ["rock vinyl", "classic rock vinyl", "indie rock vinyl"],
-  "hip-hop": ["hip hop vinyl", "rap vinyl", "hip-hop vinyl"],
-  jazz: ["jazz vinyl", "blue note vinyl", "jazz reissue vinyl"],
-  soundtracks: ["soundtrack vinyl", "movie soundtrack vinyl", "anime soundtrack vinyl"],
-  pop: ["pop vinyl", "top 40 vinyl", "limited edition pop vinyl"],
-  metal: ["metal vinyl", "heavy metal vinyl", "black metal vinyl"],
-  country: ["country vinyl", "americana vinyl", "classic country vinyl"],
-  classical: ["classical vinyl", "orchestra vinyl", "piano vinyl"],
-  electronic: ["electronic vinyl", "house vinyl", "techno vinyl"],
-  "rnb-soul": ["r&b vinyl", "soul vinyl", "motown vinyl"],
-};
-
 type DealRow = {
   asin: string;
   title: string;
@@ -41,12 +14,11 @@ type DealRow = {
   currency: string | null;
   discount_pct: number | null;
   is_under_20: boolean;
-  category: string;      // "media"
-  media_type: string;    // "vinyl"
+  category: string; // "media"
+  media_type: string; // "4k-uhd"
   sales_rank: number | null;
   updated_at: string;
 };
-
 
 function toCents(n: any): number | null {
   const x = Number(n);
@@ -64,7 +36,7 @@ function computeDiscountPct(priceCents: number | null, listCents: number | null)
   if (priceCents == null || listCents == null) return null;
   if (listCents <= 0 || priceCents <= 0) return null;
   if (priceCents >= listCents) return null;
-  return Math.round(((listCents - priceCents) / listCents) * 1000) / 10; // 1 decimal
+  return Math.round(((listCents - priceCents) / listCents) * 1000) / 10;
 }
 
 async function paapiSearch(keyword: string) {
@@ -78,7 +50,7 @@ async function paapiSearch(keyword: string) {
 
   const body = {
     Keywords: keyword,
-    SearchIndex: "Music",
+    SearchIndex: "MoviesAndTV",
     ItemCount: 10,
     Condition: "New",
     PartnerTag: partnerTag,
@@ -125,16 +97,13 @@ async function paapiSearch(keyword: string) {
 export async function GET(req: Request) {
   const url = new URL(req.url);
 
-  // Auth: token in query string
   const token = url.searchParams.get("token");
   if (!token || token !== process.env.REFRESH_TOKEN) {
     return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const genreParam = (url.searchParams.get("genre") || "all").toLowerCase() as GenreSlug;
-  const genre: GenreSlug = GENRE_KEYWORDS[genreParam] ? genreParam : "all";
-
-  const keywords = GENRE_KEYWORDS[genre];
+  // 4K UHD keywords
+  const keywords = ["4K UHD", "Ultra HD Blu-ray", "4K Blu-ray", "4K UHD movie"];
 
   const nowIso = new Date().toISOString();
   const keywordDebug: any[] = [];
@@ -147,7 +116,6 @@ export async function GET(req: Request) {
   for (const kw of keywords) {
     const { status, data } = await paapiSearch(kw);
 
-    // Handle eligibility errors explicitly
     const type = data?.__type || data?.Output?.__type;
     if (type === "com.amazon.paapi5#AssociateEligibilityException") {
       return Response.json(
@@ -165,7 +133,6 @@ export async function GET(req: Request) {
       continue;
     }
 
-    // PA-API sometimes returns Errors even when HTTP is 200.
     const errors: any[] = data?.Errors || [];
     const items: any[] =
       data?.SearchResult?.Items ||
@@ -173,13 +140,7 @@ export async function GET(req: Request) {
       data?.SearchItemsResult?.Items ||
       [];
 
-    keywordDebug.push({
-      kw,
-      errors,
-      itemsCount: items.length,
-      hasSearchResult: !!data?.SearchResult,
-      topLevelKeys: Object.keys(data || {}),
-    });
+    keywordDebug.push({ kw, errors, itemsCount: items.length });
 
     for (const item of items) {
       const asin = item?.ASIN;
@@ -201,47 +162,44 @@ export async function GET(req: Request) {
       const discountPct = computeDiscountPct(priceCents, listCents);
       const isUnder20 = priceCents !== null && priceCents <= 2000;
 
-      // TEMP: keep any item that has a price, so we can confirm the pipeline works.
-      // Tighten later to require a discount, etc.
       const qualifies = discountPct !== null && discountPct >= 15;
-if (!qualifies) continue;
+      if (!qualifies) continue;
 
+      const salesRankRaw = item?.BrowseNodeInfo?.WebsiteSalesRank?.SalesRank;
+      const salesRank = Number.isFinite(Number(salesRankRaw)) ? Number(salesRankRaw) : null;
 
       const amazonUrl = `https://www.amazon.com/dp/${asin}?tag=${process.env.AMAZON_PARTNER_TAG}`;
 
-      // NEW: pull website sales rank (lower = better)
-const salesRankRaw = item?.BrowseNodeInfo?.WebsiteSalesRank?.SalesRank;
-const salesRank = Number.isFinite(Number(salesRankRaw)) ? Number(salesRankRaw) : null;
-
-all.push({
-  asin,
-  title: title ?? asin,
-  image_url: imageUrl,
-  amazon_url: amazonUrl,
-  price_cents: priceCents,
-  list_price_cents: listCents,
-  currency: listing?.Price?.Currency || null,
-  discount_pct: discountPct,
-  is_under_20: isUnder20,
-  category: "media",
-  media_type: "vinyl",
-  sales_rank: salesRank,
-  updated_at: nowIso,
-});
-
+      all.push({
+        asin,
+        title: title ?? asin,
+        image_url: imageUrl,
+        amazon_url: amazonUrl,
+        price_cents: priceCents,
+        list_price_cents: listCents,
+        currency: listing?.Price?.Currency || null,
+        discount_pct: discountPct,
+        is_under_20: isUnder20,
+        category: "media",
+        media_type: "4k-uhd",
+        sales_rank: salesRank,
+        updated_at: nowIso,
+      });
 
       seen.add(asin);
     }
   }
 
-  // Sort: highest discount first, then lowest price
   all.sort((a, b) => {
+    const ra = a.sales_rank ?? Number.MAX_SAFE_INTEGER;
+    const rb = b.sales_rank ?? Number.MAX_SAFE_INTEGER;
+    if (ra !== rb) return ra - rb;
+
     const da = a.discount_pct ?? -1;
     const db = b.discount_pct ?? -1;
     if (db !== da) return db - da;
-    const pa = a.price_cents ?? 10**12;
-    const pb = b.price_cents ?? 10**12;
-    return pa - pb;
+
+    return (b.updated_at || "").localeCompare(a.updated_at || "");
   });
 
   const top50 = all.slice(0, 50);
@@ -254,7 +212,7 @@ all.push({
 
   return Response.json({
     ok: true,
-    genre,
+    media_type: "4k-uhd",
     found: all.length,
     savedTop50: top50.length,
     keywordDebug,

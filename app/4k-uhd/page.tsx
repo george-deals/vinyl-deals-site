@@ -2,6 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
+export const metadata: Metadata = {
+  title: "Top 4K UHD Deals (Amazon US) | Vinyl Deals",
+  description:
+    "Top 4K UHD deals from Amazon US. Updated daily. We track listings discounted at least 15% and surface the top savings in one place.",
+};
+
 export const revalidate = 3600;
 
 type Deal = {
@@ -13,7 +19,8 @@ type Deal = {
   list_price_cents: number | null;
   currency: string | null;
   discount_pct: number | null;
-  genre: string | null;
+  media_type: string | null;
+  sales_rank: number | null;
   updated_at: string;
 };
 
@@ -24,24 +31,18 @@ function money(cents: number | null, currency: string | null) {
   return cur === "USD" ? `$${val}` : `${val} ${cur}`;
 }
 
-const GENRE_SLUG = "rock";
-const GENRE_LABEL = "Rock";
-
-export const metadata: Metadata = {
-  title: `${GENRE_LABEL} Vinyl Deals (Amazon US) | Vinyl Deals`,
-  description: `Top new ${GENRE_LABEL.toLowerCase()} vinyl record deals from Amazon US. Updated daily.`,
-};
-
-export default async function GenreDealsPage() {
+export default async function Uhd4kTopDealsPage() {
   const supabase = getSupabaseAdmin();
 
   const { data, error } = await supabase
     .from("deals")
     .select(
-      "asin,title,image_url,amazon_url,price_cents,list_price_cents,currency,discount_pct,genre,updated_at"
+      "asin,title,image_url,amazon_url,price_cents,list_price_cents,currency,discount_pct,media_type,sales_rank,updated_at"
     )
-    .eq("category", "vinyl")
-    .eq("genre", GENRE_SLUG)
+    .eq("category", "media")
+    .eq("media_type", "4k-uhd")
+    .gte("discount_pct", 15)
+    .order("sales_rank", { ascending: true, nullsFirst: false })
     .order("discount_pct", { ascending: false, nullsFirst: false })
     .order("updated_at", { ascending: false })
     .limit(50);
@@ -53,18 +54,18 @@ export default async function GenreDealsPage() {
       <div className="mx-auto max-w-6xl">
         <div className="flex items-end justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold">{GENRE_LABEL} Vinyl Deals</h1>
+            <h1 className="text-3xl font-bold">Top 4K UHD Deals</h1>
             <p className="mt-2 text-slate-600">
-              New-only deals from Amazon US. Data appears after the refresh job runs.
+              4K UHD deals from Amazon US. Data appears after the refresh job runs.
             </p>
           </div>
 
           <div className="flex gap-3">
-            <Link href="/vinyl" className="underline text-slate-700">
-              Top Deals
+            <Link href="/" className="underline text-slate-700">
+              Home
             </Link>
-            <Link href="/vinyl/genres" className="underline text-slate-700">
-              All genres
+            <Link href="/disclosure" className="underline text-slate-700">
+              Disclosure
             </Link>
           </div>
         </div>
@@ -76,11 +77,7 @@ export default async function GenreDealsPage() {
         ) : deals.length === 0 ? (
           <div className="mt-6 rounded-lg border bg-white p-6">
             <p className="text-slate-700">
-              No {GENRE_LABEL.toLowerCase()} deals yet. Once the refresh job runs for this genre, the top 50 will show here.
-            </p>
-            <p className="mt-2 text-slate-600">
-              (For local dev: hit{" "}
-              <code>/api/refresh-vinyl?token=...&genre={GENRE_SLUG}</code>.)
+              No deals yet. Once the refresh endpoint runs successfully, the top 50 will show here.
             </p>
           </div>
         ) : (
