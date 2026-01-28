@@ -1,0 +1,84 @@
+name: Refresh cd feed (full catalog per run)
+
+on:
+  schedule:
+    - cron: "45 */3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: refresh-cd
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Refresh cd (discount deals) — chunked calls with backoff
+        env:
+          BASE: ${{ secrets.REFRESH_BASE_URL }}
+          TOKEN: ${{ secrets.REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          PER_RUN=10
+          HOT_PER_RUN=50
+          MAXPAGES=1
+          DELAYMS=1200
+          MIN_DISCOUNT=15
+
+          TOTAL=120
+
+          CURL_MAX_TIME=600
+          CURL_RETRIES=3
+          CURL_RETRY_DELAY=10
+          CURL_RETRY_MAX_TIME=60
+
+          BASE="$(echo "${BASE:-}" | tr -d '\r\n' | xargs)"
+          BASE="${BASE%/}"
+          if [ -z "$BASE" ]; then
+            BASE="https://www.mediadealshub.com"
+          fi
+
+          echo "Refreshing cd deals in chunks..."
+          echo "BASE: ${BASE}"
+
+          fails=0
+          offset=0
+
+          while [ $offset -lt $TOTAL ]; do
+            echo "Chunk offset=$offset size=$PER_RUN"
+
+            URL="${BASE}/api/refresh-cd?token=${TOKEN}&min_discount=${MIN_DISCOUNT}&maxPages=${MAXPAGES}&delayMs=${DELAYMS}&hotPerRun=${HOT_PER_RUN}&catalogPerRun=${PER_RUN}&catalogOffset=${offset}"
+
+            ok=0
+            for i in 1 2 3; do
+              set +e
+              RESP=$(curl -sS --fail --max-time "$CURL_MAX_TIME" "$URL" | head -c 2000)
+              CODE=$?
+              set -e
+              if [ $CODE -eq 0 ]; then
+                echo "$RESP"
+                ok=1
+                break
+              fi
+              echo "curl failed (code=$CODE). Sleeping..."
+              sleep $((CURL_RETRY_DELAY * i))
+            done
+
+            if [ $ok -eq 0 ]; then
+              fails=$((fails + 1))
+              echo "Chunk failed after retries (offset=$offset)."
+            fi
+
+            offset=$((offset + PER_RUN))
+            sleep 2
+          done
+
+          if [ $fails -gt 0 ]; then
+            echo "Completed with failures: $fails chunk(s) failed."
+            exit 1
+          fi
+
+          echo "Done."

@@ -1,0 +1,95 @@
+name: Refresh media feeds (hourly)
+
+on:
+  schedule:
+    - cron: "05 * * * *"  # vinyl
+    - cron: "20 * * * *"  # 4k-uhd
+    - cron: "35 * * * *"  # blu-ray
+    - cron: "45 * * * *"  # cds
+    - cron: "55 * * * *"  # dvd
+  workflow_dispatch:
+    inputs:
+      media_type:
+        description: "Run one: vinyl | 4k-uhd | blu-ray | cds | dvd"
+        required: false
+        default: ""
+
+concurrency:
+  group: refresh-media-feeds
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Pick media type for this run
+        id: pick
+        run: |
+          set -euo pipefail
+
+          if [ -n "${{ github.event.inputs.media_type }}" ]; then
+            echo "type=${{ github.event.inputs.media_type }}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          MINUTE=$(date -u +%M)
+          case "$MINUTE" in
+            "05") TYPE="vinyl" ;;
+            "20") TYPE="4k-uhd" ;;
+            "35") TYPE="blu-ray" ;;
+            "45") TYPE="cds" ;;
+            "55") TYPE="dvd" ;;
+            *) TYPE="" ;;
+          esac
+
+          echo "type=$TYPE" >> $GITHUB_OUTPUT
+
+      - name: Refresh selected feed
+        if: steps.pick.outputs.type != ''
+        env:
+          BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          TOKEN: ${{ secrets.REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          TYPE="${{ steps.pick.outputs.type }}"
+
+          # Sanitize BASE_URL (strip CR/LF and whitespace), remove trailing slash
+          BASE="$(echo "${BASE_URL:-}" | tr -d '\r\n' | xargs)"
+          BASE="${BASE%/}"
+
+          # Fallback if secret missing/empty
+          if [ -z "$BASE" ]; then
+            BASE="https://www.mediadealshub.com"
+          fi
+
+          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=5&delayMs=800"
+
+          echo "Refreshing: $TYPE"
+          echo "BASE: $BASE"
+          echo "URL: $URL"
+
+          for i in 1 2 3; do
+            echo "Attempt $i..."
+            set +e
+            RESP=$(curl -sS --fail --max-time 240 "$URL")
+            CODE=$?
+            set -e
+
+            if [ $CODE -eq 0 ]; then
+              echo "$RESP"
+              exit 0
+            fi
+
+            echo "curl failed (code=$CODE). Sleeping..."
+            sleep $((10 * i))
+          done
+
+          echo "Failed after retries."
+          exit 1
+
+      - name: No-op (non-scheduled minute)
+        if: steps.pick.outputs.type == ''
+        run: |
+          echo "No scheduled TYPE for this minute. Exiting."

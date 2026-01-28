@@ -1,0 +1,58 @@
+name: Refresh blu-ray feed (hourly)
+
+on:
+  schedule:
+    - cron: "35 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: refresh-blu-ray
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Refresh blu-ray
+        env:
+          BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          TOKEN: ${{ secrets.REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          TYPE="blu-ray"
+
+          # Sanitize BASE_URL (strip CR/LF and whitespace), remove trailing slash
+          BASE="$(echo "${BASE_URL:-}" | tr -d '\r\n' | xargs)"
+          BASE="${BASE%/}"
+
+          # Fallback if secret missing/empty
+          if [ -z "$BASE" ]; then
+            BASE="https://www.mediadealshub.com"
+          fi
+
+          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=5&delayMs=800"
+
+          echo "Refreshing: $TYPE"
+          echo "BASE: $BASE"
+          echo "URL: $URL"
+
+          for i in 1 2 3; do
+            echo "Attempt $i..."
+            set +e
+            RESP=$(curl -sS --fail --max-time 240 "$URL")
+            CODE=$?
+            set -e
+
+            if [ $CODE -eq 0 ]; then
+              echo "$RESP"
+              exit 0
+            fi
+
+            echo "curl failed (code=$CODE). Sleeping..."
+            sleep $((10 * i))
+          done
+
+          echo "Failed after retries."
+          exit 1

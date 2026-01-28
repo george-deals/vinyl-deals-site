@@ -1,0 +1,25 @@
+name: Discover vinyl ASINs (hourly)
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+jobs:
+  discover-vinyl:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Call discover vinyl endpoint in small batches
+        run: |
+          BASE="https://YOURDOMAIN.com"
+          TOKEN="${{ secrets.REFRESH_TOKEN }}"
+          BATCH=3
+
+          for i in {0..20}; do
+            OFFSET=$((i*BATCH))
+            URL="$BASE/api/discover-vinyl-asins?token=$TOKEN&catalogPerRun=$BATCH&maxPages=1&delayMs=0"
+            echo "Run $i URL: $URL"
+            curl -sS "$URL"
+            sleep 1
+          done

@@ -1,0 +1,31 @@
+name: Discover CD ASINs (hourly)
+
+on:
+  schedule:
+    - cron: "25 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: discover-cd-asins
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Discover CD ASINs (hourly)
+        env:
+          BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          TOKEN: ${{ secrets.REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          BASE="$(echo "${BASE_URL:-}" | tr -d '\r\n' | xargs)"
+          BASE="${BASE%/}"
+          if [ -z "$BASE" ]; then BASE="https://www.mediadealshub.com"; fi
+
+          URL="$BASE/api/discover-cd-asins?token=$TOKEN&maxPages=2&delayMs=2500&catalogPerRun=30"
+
+          echo "URL: $URL"
+          curl -sS --fail --max-time 240 "$URL"

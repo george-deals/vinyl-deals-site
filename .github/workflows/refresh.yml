@@ -1,0 +1,14 @@
+
+name: Refresh Feeds (Auto)
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refresh Vinyl
+        run: curl "$BASE/api/refresh-vinyl?token=$TOKEN"

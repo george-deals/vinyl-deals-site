@@ -1,0 +1,33 @@
+name: Track vinyl prices (4x daily)
+
+on:
+  schedule:
+    - cron: "10 0,6,12,18 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: track-vinyl-prices
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Track vinyl prices
+        env:
+          BASE_URL: ${{ secrets.PROD_BASE_URL }}
+
+          
+          TOKEN: ${{ secrets.REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          BASE="$(echo "${BASE_URL:-}" | tr -d '\r\n' | xargs)"
+          BASE="${BASE%/}"
+          if [ -z "$BASE" ]; then BASE="https://www.mediadealshub.com"; fi
+
+          URL="$BASE/api/track-vinyl-prices?token=$TOKEN&batchSize=200&delayMs=400"
+
+          echo "URL: $URL"
+          curl -sS --fail --max-time 240 "$URL"

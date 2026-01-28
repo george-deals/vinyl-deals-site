@@ -1,0 +1,67 @@
+name: Refresh vinyl under $20 (full catalog per run)
+
+on:
+  schedule:
+    - cron: "30 */3 * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Refresh vinyl under $20 — chunked calls with backoff
+        env:
+          BASE: ${{ secrets.REFRESH_BASE_URL }}
+          TOKEN: ${{ secrets.REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Tune these (safer defaults)
+          PER_RUN=10
+          MAXPAGES=1
+          DELAYMS=1200
+          TOTAL=120
+
+          # Curl behavior
+          CURL_MAX_TIME=600
+          CURL_RETRIES=3
+          CURL_RETRY_DELAY=10
+          CURL_RETRY_MAX_TIME=60
+
+          # Throttle protection between chunks
+          SLEEP_BETWEEN_CHUNKS=8
+
+          if [ -z "${BASE:-}" ]; then
+            echo "ERROR: REFRESH_BASE_URL secret is empty"
+            exit 1
+          fi
+
+          if [ -z "${TOKEN:-}" ]; then
+            echo "ERROR: REFRESH_TOKEN secret is empty"
+            exit 1
+          fi
+
+          echo "BASE: ${BASE}"
+          echo 'Refreshing vinyl under $20 in chunks...'
+
+          offset=0
+          while [ $offset -lt $TOTAL ]; do
+            echo "Chunk offset=$offset size=$PER_RUN"
+
+            url="${BASE}/api/refresh-vinyl-under-20?token=${TOKEN}&maxPages=${MAXPAGES}&delayMs=${DELAYMS}&catalogPerRun=${PER_RUN}&catalogOffset=${offset}"
+
+            curl -sS -f --max-time "${CURL_MAX_TIME}" \
+              --retry "${CURL_RETRIES}" \
+              --retry-delay "${CURL_RETRY_DELAY}" \
+              --retry-max-time "${CURL_RETRY_MAX_TIME}" \
+              --retry-all-errors \
+              "$url" \
+              | head -c 2000
+
+            offset=$((offset + PER_RUN))
+            sleep "${SLEEP_BETWEEN_CHUNKS}"
+          done
+
+          echo "Done."

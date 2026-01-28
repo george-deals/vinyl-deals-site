@@ -1,0 +1,61 @@
+name: Refresh vinyl feed
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refresh vinyl (discount deals) — chunked calls with backoff
+        env:
+          BASE: ${{ secrets.REFRESH_BASE_URL }}
+          TOKEN: ${{ secrets.REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # SAFETY-FIRST but HIGH COVERAGE.
+          # Each API call remains small (serverless-safe); we just make many calls.
+          PER_RUN=25
+          MAXPAGES=1
+          DELAYMS=0
+          MIN_DISCOUNT=15
+
+          # Total catalog coverage per workflow run (artists processed) = TOTAL.
+          # Increase if you want even more freshness; 500 is a good "fill hard" target.
+          TOTAL=500
+
+          # Curl behavior
+          CURL_MAX_TIME=600
+          CURL_RETRIES=3
+          CURL_RETRY_DELAY=10
+          CURL_RETRY_MAX_TIME=60
+
+          # Throttle protection between chunks (keep modest; PA-API already rate limited in-code)
+          SLEEP_BETWEEN_CHUNKS=2
+
+          if [ -z "${BASE:-}" ]; then
+            echo "ERROR: REFRESH_BASE_URL secret is empty"
+            exit 1
+          fi
+          if [ -z "${TOKEN:-}" ]; then
+            echo "ERROR: REFRESH_TOKEN secret is empty"
+            exit 1
+          fi
+
+          echo "BASE: ${BASE}"
+          echo "Refreshing vinyl deals in chunks..."
+          offset=0
+          while [ $offset -lt $TOTAL ]; do
+            echo "Chunk offset=$offset size=$PER_RUN"
+            url="${BASE}/api/refresh-vinyl?token=${TOKEN}&min_discount=${MIN_DISCOUNT}&maxPages=${MAXPAGES}&delayMs=${DELAYMS}&catalogPerRun=${PER_RUN}&catalogOffset=${offset}"
+
+            curl -sS -f --max-time "${CURL_MAX_TIME}"               --retry "${CURL_RETRIES}"               --retry-delay "${CURL_RETRY_DELAY}"               --retry-max-time "${CURL_RETRY_MAX_TIME}"               --retry-all-errors               "$url"               | head -c 2000
+
+            offset=$((offset + PER_RUN))
+            sleep "${SLEEP_BETWEEN_CHUNKS}"
+          done
+
+          echo "Done."

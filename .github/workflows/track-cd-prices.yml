@@ -1,0 +1,31 @@
+name: Track CD prices (4x daily)
+
+on:
+  schedule:
+    - cron: "35 1,7,13,19 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: track-cd-prices
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Track CD prices (4x daily)
+        env:
+          BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          TOKEN: ${{ secrets.REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          BASE="$(echo "${BASE_URL:-}" | tr -d '\r\n' | xargs)"
+          BASE="${BASE%/}"
+          if [ -z "$BASE" ]; then BASE="https://www.mediadealshub.com"; fi
+
+          URL="$BASE/api/track-prices?token=$TOKEN&media_type=cd&batchSize=80&delayMs=300"
+
+          echo "URL: $URL"
+          curl -sS --fail --max-time 240 "$URL"
