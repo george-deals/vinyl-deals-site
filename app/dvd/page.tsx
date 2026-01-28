@@ -83,18 +83,20 @@ export async function generateMetadata({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }): Promise<Metadata> {
   const sp = await searchParams;
-  const f = parseFilter(sp.discount);
+  const filter = parseFilter(sp.discount);
 
-  const baseTitle = "Top DVD Deals (Amazon US)";
+  const base = "DVD Deals";
   const title =
-    f === "all" ? `${baseTitle} | DVD Deals` : `${filterLabel(f)} — ${baseTitle} | DVD Deals`;
-
+    filter === "all" ? `${base} (15%+ Off)` : `${base} – ${filterLabel(filter)}`;
   const description =
-    f === "all"
-      ? "Top DVD deals from Amazon US. Updated regularly. Browse top-selling titles (15%+) in one place."
-      : `Browse ${filterLabel(f)} on Amazon US DVDs. Updated regularly. Top-selling titles first.`;
+    filter === "all"
+      ? "Browse DVD deals with 15%+ discounts, sorted by sales rank."
+      : `Browse DVD deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
 
-  const canonical = f === "all" ? "/dvd" : `/dvd?discount=${f}`;
+  const canonical =
+    filter === "all"
+      ? "https://www.mediadealshub.com/dvd"
+      : `https://www.mediadealshub.com/dvd?discount=${encodeURIComponent(String(sp.discount ?? ""))}`;
 
   return {
     title,
@@ -102,6 +104,35 @@ export async function generateMetadata({
     alternates: { canonical },
     robots: { index: true, follow: true },
   };
+}
+
+function formatPT(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleString("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function chip(label: string, href: string, active: boolean) {
+  return (
+    <Link
+      href={href}
+      prefetch
+      className={[
+        "rounded-full border px-3 py-1 text-sm transition",
+        active
+          ? "border-slate-900 bg-slate-900 text-white"
+          : "border-slate-200 bg-white text-slate-800 hover:bg-slate-50",
+      ].join(" ")}
+    >
+      {label}
+    </Link>
+  );
 }
 
 export default async function DvdDealsPage({
@@ -112,7 +143,8 @@ export default async function DvdDealsPage({
   const sp = await searchParams;
   const filter = parseFilter(sp.discount);
 
-  const lastUpdatedIso = await getLastUpdated("blu-ray", FEED_KEY);
+  // ✅ FIX: this page is DVD, not blu-ray
+  const lastUpdatedIso = await getLastUpdated("dvd", FEED_KEY);
 
   const supabase = getSupabaseAdmin();
   const cutoff = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000).toISOString();
@@ -138,35 +170,18 @@ export default async function DvdDealsPage({
     .order("sales_rank", { ascending: true, nullsFirst: false })
     .limit(500);
 
-  const deals: Deal[] = (data as any) || [];
-
-  const chip = (label: string, href: string, active: boolean) => (
-    <Link
-      href={href}
-      className={[
-        "inline-flex items-center rounded-full border px-3 py-1 text-sm",
-        active
-          ? "bg-slate-900 text-white border-slate-900"
-          : "bg-white text-slate-700 hover:text-slate-900 hover:bg-slate-50",
-      ].join(" ")}
-    >
-      {label}
-    </Link>
-  );
+  const deals: Deal[] = (data ?? []) as Deal[];
 
   return (
-    <main className="min-h-screen px-6 py-10">
-      <div className="mx-auto max-w-6xl">
-        <div className="space-y-2">
-  <h1 className="text-3xl font-bold">DVD Deals</h1>
-  <p className="mt-2 text-slate-600">
-    Filter top-selling DVD deals by discount. Only deals confirmed on the latest sync are shown.
-  </p>
-  <div className="mt-2 text-sm text-slate-600">
-    Last Updated: <strong>{lastUpdatedIso ? formatPT(lastUpdatedIso) : "—"}</strong>
-  </div>
-</div>
-
+    <main className="mx-auto w-full max-w-6xl px-4 py-10">
+      <div className="flex flex-col gap-2">
+        <h1 className="text-3xl font-bold tracking-tight">DVD Deals</h1>
+        <p className="text-slate-700">
+          15%+ off (sorted by sales rank). Filter by discount range.
+        </p>
+        <p className="text-sm text-slate-600">
+          Last Updated: <strong>{lastUpdatedIso ? formatPT(lastUpdatedIso) : "—"}</strong>
+        </p>
 
         {/* Filters */}
         <div className="mt-6 flex flex-wrap gap-2">
@@ -178,7 +193,8 @@ export default async function DvdDealsPage({
           {chip("50%+ OFF", "/dvd?discount=50plus", filter === "50plus")}
         </div>
 
-        {!latestSyncId ? (
+        {/* ✅ FIX: latestSyncId didn't exist; gate on lastUpdatedIso instead */}
+        {!lastUpdatedIso ? (
           <div className="mt-6 rounded-lg border bg-white p-6">
             <p className="text-slate-700">
               No synced data yet. Once refresh runs successfully, deals will appear here.
@@ -195,174 +211,64 @@ export default async function DvdDealsPage({
             </p>
           </div>
         ) : (
-          <>
-            <div className="mt-6 text-sm text-slate-600">
-              Showing <strong>{deals.length}</strong> results for <strong>{filterLabel(filter)}</strong>
-            </div>
-
-            <ul className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-5">
-              {deals.map((d) => {
-                const price = money(d.price_cents, d.currency);
-                const list = money(d.list_price_cents, d.currency);
-                const hasDiscount = typeof d.discount_pct === "number";
-                return (
-                  <li key={d.asin} className="h-full">
-
-                          <a
-
-                            href={d.amazon_url}
-
-                            target="_blank"
-
-                            rel="nofollow noopener noreferrer"
-
-                            className="group flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
-
-                          >
-
-                            {/* Top section */}
-
-                            <div className="p-4">
-
-                              {/* Mobile: horizontal | Desktop: vertical */}
-
-                              <div className="flex items-center gap-4 lg:flex-col lg:items-stretch lg:gap-3">
-
-                                {/* Image (NO CROP) */}
-
-                                <div className="relative h-32 w-32 shrink-0 rounded-2xl bg-slate-50 ring-1 ring-slate-100 lg:h-auto lg:w-full lg:aspect-square">
-
-                                  {d.image_url ? (
-
-                                    // eslint-disable-next-line @next/next/no-img-element
-
-                                    <img
-
-                                      src={d.image_url}
-
-                                      alt={d.title}
-
-                                      className="absolute inset-0 h-full w-full object-contain p-0.5 lg:p-1"
-
-                                      loading="lazy"
-
-                                    />
-
-                                  ) : null}
-
-                                </div>
-
-
-                                {/* Content */}
-
-                                <div className="min-w-0 flex-1 text-right lg:text-center">
-
-                                  {/* Discount badge — ABOVE artist */}
-
-                                  {hasDiscount ? (
-
-                                    <div className="mb-3 flex justify-end lg:mb-2 lg:justify-center">
-
-                                      <span className="rounded-full bg-orange-50 px-3 py-1 text-[12px] font-extrabold tracking-wide text-orange-700 ring-1 ring-orange-200 lg:px-2.5 lg:py-0.5 lg:text-[11px]">
-
-                                        {d.discount_pct}% OFF
-
-                                      </span>
-
-                                    </div>
-
-                                  ) : null}
-
-
-                                  {/* Artist */}
-
-                                  {((d.media_type === "vinyl" || d.media_type === "cd") && d.artist) ? (
-
-                                    <div className="text-[12px] font-bold uppercase tracking-wide text-slate-700 lg:text-[11px] lg:text-center">
-
-                                      {d.artist}
-
-                                    </div>
-
-                                  ) : null}
-
-
-                                  {/* Title */}
-
-                                  <p className="mt-2 line-clamp-2 text-[15px] font-semibold leading-snug text-slate-900 lg:text-[14px] lg:text-center">
-
-                                    {d.title}
-
-                                  </p>
-
-
-                                  {/* Price row */}
-
-                                  <div className="mt-3 flex items-end justify-end gap-3 lg:justify-center lg:gap-2">
-
-                                    {list ? (
-
-                                      <span className="text-[13px] text-slate-400 line-through lg:text-[12px]">
-
-                                        {list}
-
-                                      </span>
-
-                                    ) : null}
-
-
-                                    {price ? (
-
-                                      <span className="text-[22px] font-extrabold leading-none text-slate-900 lg:text-[20px]">
-
-                                        {price}
-
-                                      </span>
-
-                                    ) : null}
-
-                                  </div>
-
-                                </div>
-
-                              </div>
-
-                            </div>
-
-
-                            {/* Footer */}
-
-                            <div className="mt-auto border-t border-slate-100 px-4 py-3 text-xs">
-
-                              <span className="inline-flex items-center gap-1 font-semibold text-slate-900">
-
-                                View on Amazon <span aria-hidden>›</span>
-
-                              </span>
-
-                            </div>
-
-                          </a>
-
-                        </li>
-                );
-              })}
-            </ul>
-          </>
+          <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {deals.map((d) => {
+              const price = money(d.price_cents, d.currency);
+              const list = money(d.list_price_cents, d.currency);
+              const off =
+                d.discount_pct != null ? `${Math.round(d.discount_pct)}%` : null;
+
+              return (
+                <a
+                  key={d.asin}
+                  href={d.amazon_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-xl border bg-white p-4 shadow-sm transition hover:shadow-md"
+                >
+                  <div className="flex gap-3">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={d.image_url || "/placeholder.png"}
+                      alt={d.title}
+                      className="h-24 w-24 rounded-md object-cover"
+                      loading="lazy"
+                    />
+                    <div className="min-w-0">
+                      <div className="line-clamp-2 text-sm font-semibold text-slate-900">
+                        {d.title}
+                      </div>
+                      {d.artist ? (
+                        <div className="mt-1 text-xs text-slate-600">{d.artist}</div>
+                      ) : null}
+
+                      <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                        {price ? (
+                          <span className="text-base font-bold">{price}</span>
+                        ) : (
+                          <span className="text-sm text-slate-700">Price —</span>
+                        )}
+                        {list && price && list !== price ? (
+                          <span className="text-xs text-slate-500 line-through">{list}</span>
+                        ) : null}
+                        {off ? (
+                          <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs font-medium text-white">
+                            {off} OFF
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <div className="mt-2 text-xs text-slate-500">
+                        Rank: {d.sales_rank ?? "—"} · Updated: {formatPT(d.updated_at)}
+                      </div>
+                    </div>
+                  </div>
+                </a>
+              );
+            })}
+          </div>
         )}
       </div>
     </main>
   );
-}
-
-function formatPT(iso: string) {
-  const d = new Date(iso);
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Los_Angeles",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(d);
 }
