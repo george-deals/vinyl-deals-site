@@ -11,7 +11,7 @@ const CORE_KEYWORDS = [
   "4k collector edition",
   "4k box set",
   "4k limited edition",
-  "4k remastered"
+  "4k remastered",
 ];
 
 function uniqClean(list: string[]): string[] {
@@ -21,9 +21,12 @@ function uniqClean(list: string[]): string[] {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
-  // Movies are sourced from data/movies_master.txt (one title per line)
-  const moviesPerRun = Number(searchParams.get("moviesPerRun") ?? "200");
+  // ✅ safer defaults (old was 200)
+  const moviesPerRunRaw = Number(searchParams.get("moviesPerRun") ?? "25");
   const moviesOffsetRaw = searchParams.get("moviesOffset");
+
+  // ✅ hard cap so a bad param can't create a huge run
+  const PER_RUN = Math.min(Math.max(moviesPerRunRaw || 0, 0), 75);
 
   const moviesAll = await readArtistFile("data/movies_master.txt");
 
@@ -31,15 +34,19 @@ export async function GET(req: Request) {
   if (moviesOffsetRaw != null) {
     const moviesOffset = Number(moviesOffsetRaw ?? "0");
     const start = Math.max(0, moviesOffset);
-    const size = Math.max(0, moviesPerRun);
-    movieBatch = moviesAll.slice(start, start + size);
+    movieBatch = moviesAll.slice(start, start + PER_RUN);
   } else {
     const hourSeed = Math.floor(Date.now() / 3600000);
-    movieBatch = rotateSlice(moviesAll, Math.max(0, moviesPerRun), hourSeed);
+    movieBatch = rotateSlice(moviesAll, PER_RUN, hourSeed);
   }
 
-  const movieKeywords = movieBatch.map((t) => `"${String(t).replace(/"/g, "").trim()}" 4k uhd`);
-  const keywords = uniqClean([...CORE_KEYWORDS, ...movieKeywords]);
+  const movieKeywords = movieBatch.map(
+    (t) => `"${String(t).replace(/"/g, "").trim()}" 4k uhd`
+  );
+
+  // ✅ cap total keyword count so refreshMedia doesn't run forever
+  const MAX_KEYWORDS = 80;
+  const keywords = uniqClean([...CORE_KEYWORDS, ...movieKeywords]).slice(0, MAX_KEYWORDS);
 
   return refreshMedia(req, {
     media_type: "4k-uhd",
