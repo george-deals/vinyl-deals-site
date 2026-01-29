@@ -7,7 +7,7 @@ export default async function FourKUhdUnder15Page() {
 
   const supabase = getSupabaseAdmin();
   const { data } = await supabase
-    .from("media_deals")
+    .from("deals")
     .select("*")
     .eq("category", "4k-uhd")
     .lte("price", 15)

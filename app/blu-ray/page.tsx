@@ -9,7 +9,7 @@ export default async function BlurayTopDealsPage() {
 
   // Build the query first, then execute it (prevents undefined 'q' errors)
   const q = supabase
-    .from("media_deals")
+    .from("deals")
     .select("*")
     .eq("category", "blu-ray")
     .gte("last_seen_at", cutoff);
