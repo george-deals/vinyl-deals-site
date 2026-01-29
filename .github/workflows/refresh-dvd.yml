@@ -28,7 +28,7 @@ jobs:
             BASE="https://www.mediadealshub.com"
           fi
 
-          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=5&delayMs=800"
+          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=1&delayMs=1500"
 
           echo "Refreshing: $TYPE"
           echo "BASE: $BASE"
