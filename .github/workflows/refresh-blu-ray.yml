@@ -12,7 +12,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Refresh blu-ray
         env:
@@ -32,7 +32,7 @@ jobs:
             BASE="https://www.mediadealshub.com"
           fi
 
-          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=1&delayMs=1500&moviesPerRun=25"
+          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=1&delayMs=1500&moviesPerRun=10"
 
           echo "Refreshing: $TYPE"
           echo "BASE: $BASE"
