@@ -212,65 +212,80 @@ export default async function BluRayDealsPage({
             </p>
           </div>
         ) : (
-          <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <ul className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-5">
             {deals.map((d) => {
               const price = money(d.price_cents, d.currency);
               const list = money(d.list_price_cents, d.currency);
-              const off = d.discount_pct != null ? `${Math.round(d.discount_pct)}%` : null;
+              const hasDiscount = typeof d.discount_pct === "number";
 
               return (
-                <a
-                  key={d.asin}
-                  href={d.amazon_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded-xl border bg-white p-4 shadow-sm transition hover:shadow-md"
-                >
-                  <div className="flex gap-3">
-                    <div className="relative h-32 w-32 shrink-0 rounded-2xl bg-slate-50 ring-1 ring-slate-100">
-                      {d.image_url ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={d.image_url}
-                          alt={d.title}
-                          className="absolute inset-0 h-full w-full object-contain p-0.5"
-                          loading="lazy"
-                        />
-                      ) : null}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="line-clamp-2 text-sm font-semibold text-slate-900">
-                        {d.title}
-                      </div>
-                      {d.artist ? (
-                        <div className="mt-1 text-xs text-slate-600">{d.artist}</div>
-                      ) : null}
+                <li key={d.asin} className="h-full">
+                  <a
+                    href={d.amazon_url}
+                    target="_blank"
+                    rel="nofollow noopener noreferrer"
+                    className="group flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                  >
+                    <div className="p-4">
+                      <div className="flex items-center gap-4 lg:flex-col lg:items-stretch lg:gap-3">
+                        <div className="relative h-32 w-32 shrink-0 rounded-2xl bg-slate-50 ring-1 ring-slate-100 lg:h-auto lg:w-full lg:aspect-square">
+                          {d.image_url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={d.image_url}
+                              alt={d.title}
+                              className="absolute inset-0 h-full w-full object-contain p-0.5 lg:p-1"
+                              loading="lazy"
+                            />
+                          ) : null}
+                        </div>
 
-                      <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                        {price ? (
-                          <span className="text-base font-bold">{price}</span>
-                        ) : (
-                          <span className="text-sm text-slate-700">Price —</span>
-                        )}
-                        {list && price && list !== price ? (
-                          <span className="text-xs text-slate-500 line-through">{list}</span>
-                        ) : null}
-                        {off ? (
-                          <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs font-medium text-white">
-                            {off} OFF
-                          </span>
-                        ) : null}
-                      </div>
+                        <div className="min-w-0 flex-1 text-right lg:text-center">
+                          {hasDiscount ? (
+                            <div className="mb-3 flex justify-end lg:mb-2 lg:justify-center">
+                              <span className="rounded-full bg-orange-50 px-3 py-1 text-[12px] font-extrabold tracking-wide text-orange-700 ring-1 ring-orange-200 lg:px-2.5 lg:py-0.5 lg:text-[11px]">
+                                {d.discount_pct}% OFF
+                              </span>
+                            </div>
+                          ) : null}
 
-                      <div className="mt-2 text-xs text-slate-500">
-                        Rank: {d.sales_rank ?? "—"} · Updated: {formatPT(d.updated_at)}
+                          {d.artist ? (
+                            <div className="text-[12px] font-bold uppercase tracking-wide text-slate-700 lg:text-[11px] lg:text-center">
+                              {d.artist}
+                            </div>
+                          ) : null}
+
+                          <p className="mt-2 line-clamp-2 text-[15px] font-semibold leading-snug text-slate-900 lg:text-[14px] lg:text-center">
+                            {d.title}
+                          </p>
+
+                          <div className="mt-3 flex items-end justify-end gap-3 lg:justify-center lg:gap-2">
+                            {list ? (
+                              <span className="text-[13px] text-slate-400 line-through lg:text-[12px]">
+                                {list}
+                              </span>
+                            ) : null}
+
+                            {price ? (
+                              <span className="text-[22px] font-extrabold leading-none text-slate-900 lg:text-[20px]">
+                                {price}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </a>
+
+                    <div className="mt-auto border-t border-slate-100 px-4 py-3 text-xs">
+                      <span className="inline-flex items-center gap-1 font-semibold text-slate-900">
+                        View on Amazon <span aria-hidden>›</span>
+                      </span>
+                    </div>
+                  </a>
+                </li>
               );
             })}
-          </div>
+          </ul>
         )}
       </div>
     </main>

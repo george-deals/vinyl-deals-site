@@ -96,31 +96,80 @@ export default async function Uhd30PlusPage() {
           <Link className="underline" href="/4k-uhd/under-15">Under $15</Link>
         </div>
       </div>
+      <ul className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-5">
+        {deals.map((d) => {
+          const price = money(d.price_cents, d.currency);
+          const list = money(d.list_price_cents, d.currency);
+          const hasDiscount = typeof d.discount_pct === "number";
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {deals.map((d) => (
-          <a key={d.asin} href={d.amazon_url} target="_blank" rel="noreferrer" className="block border rounded p-2 hover:shadow">
-            <div className="relative w-full aspect-square rounded-2xl bg-slate-50 ring-1 ring-slate-100">
-              {d.image_url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={d.image_url}
-                  alt={d.title}
-                  className="absolute inset-0 h-full w-full object-contain p-0.5"
-                />
-              ) : null}
-            </div>
-            <div className="mt-2">
-              <div className="font-semibold text-sm line-clamp-2">{d.title}</div>
-              <div className="text-xs opacity-80 line-clamp-1">{d.artist ?? ""}</div>
-              <div className="text-sm mt-1">
-                {money(d.price_cents, d.currency)}{" "}
-                {d.discount_pct != null ? <span className="opacity-80">({d.discount_pct}% off)</span> : null}
-              </div>
-            </div>
-          </a>
-        ))}
-      </div>
+          return (
+            <li key={d.asin} className="h-full">
+              <a
+                href={d.amazon_url}
+                target="_blank"
+                rel="nofollow noopener noreferrer"
+                className="group flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+              >
+                <div className="p-4">
+                  <div className="flex items-center gap-4 lg:flex-col lg:items-stretch lg:gap-3">
+                    <div className="relative h-32 w-32 shrink-0 rounded-2xl bg-slate-50 ring-1 ring-slate-100 lg:h-auto lg:w-full lg:aspect-square">
+                      {d.image_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={d.image_url}
+                          alt={d.title}
+                          className="absolute inset-0 h-full w-full object-contain p-0.5 lg:p-1"
+                          loading="lazy"
+                        />
+                      ) : null}
+                    </div>
+
+                    <div className="min-w-0 flex-1 text-right lg:text-center">
+                      {hasDiscount ? (
+                        <div className="mb-3 flex justify-end lg:mb-2 lg:justify-center">
+                          <span className="rounded-full bg-orange-50 px-3 py-1 text-[12px] font-extrabold tracking-wide text-orange-700 ring-1 ring-orange-200 lg:px-2.5 lg:py-0.5 lg:text-[11px]">
+                            {d.discount_pct}% OFF
+                          </span>
+                        </div>
+                      ) : null}
+
+                      {d.artist ? (
+                        <div className="text-[12px] font-bold uppercase tracking-wide text-slate-700 lg:text-[11px] lg:text-center">
+                          {d.artist}
+                        </div>
+                      ) : null}
+
+                      <p className="mt-2 line-clamp-2 text-[15px] font-semibold leading-snug text-slate-900 lg:text-[14px] lg:text-center">
+                        {d.title}
+                      </p>
+
+                      <div className="mt-3 flex items-end justify-end gap-3 lg:justify-center lg:gap-2">
+                        {list ? (
+                          <span className="text-[13px] text-slate-400 line-through lg:text-[12px]">
+                            {list}
+                          </span>
+                        ) : null}
+
+                        {price ? (
+                          <span className="text-[22px] font-extrabold leading-none text-slate-900 lg:text-[20px]">
+                            {price}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-auto border-t border-slate-100 px-4 py-3 text-xs">
+                  <span className="inline-flex items-center gap-1 font-semibold text-slate-900">
+                    View on Amazon <span aria-hidden>›</span>
+                  </span>
+                </div>
+              </a>
+            </li>
+          );
+        })}
+      </ul>
 
       {deals.length === 0 ? (
         <p className="mt-6 opacity-80">No deals found in the last {STALE_DAYS} days.</p>
