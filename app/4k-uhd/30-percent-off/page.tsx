@@ -100,12 +100,16 @@ export default async function Uhd30PlusPage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {deals.map((d) => (
           <a key={d.asin} href={d.amazon_url} target="_blank" rel="noreferrer" className="block border rounded p-2 hover:shadow">
-            {d.image_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={d.image_url} alt={d.title} className="w-full h-auto rounded" />
-            ) : (
-              <div className="w-full aspect-square bg-gray-100 rounded" />
-            )}
+            <div className="relative w-full aspect-square rounded-2xl bg-slate-50 ring-1 ring-slate-100">
+              {d.image_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={d.image_url}
+                  alt={d.title}
+                  className="absolute inset-0 h-full w-full object-contain p-0.5"
+                />
+              ) : null}
+            </div>
             <div className="mt-2">
               <div className="font-semibold text-sm line-clamp-2">{d.title}</div>
               <div className="text-xs opacity-80 line-clamp-1">{d.artist ?? ""}</div>

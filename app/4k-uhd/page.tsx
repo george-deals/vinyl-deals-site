@@ -227,13 +227,17 @@ export default async function FourKUhdDealsPage({
                   className="rounded-xl border bg-white p-4 shadow-sm transition hover:shadow-md"
                 >
                   <div className="flex gap-3">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={d.image_url || "/placeholder.png"}
-                      alt={d.title}
-                      className="h-24 w-24 rounded-md object-cover"
-                      loading="lazy"
-                    />
+                    <div className="relative h-32 w-32 shrink-0 rounded-2xl bg-slate-50 ring-1 ring-slate-100">
+                      {d.image_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={d.image_url}
+                          alt={d.title}
+                          className="absolute inset-0 h-full w-full object-contain p-0.5"
+                          loading="lazy"
+                        />
+                      ) : null}
+                    </div>
                     <div className="min-w-0">
                       <div className="line-clamp-2 text-sm font-semibold text-slate-900">
                         {d.title}
