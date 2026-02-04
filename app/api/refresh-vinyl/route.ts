@@ -134,22 +134,32 @@ async function paapiGetItems(asins: string[]) {
   return resp.data?.ItemsResult?.Items || [];
 }
 
-async function upsertDealRows(rows: any[]) {
-  if (!rows.length) return 0;
+async function updateDealRows(rows: any[], feedKey: string) {
+  if (!rows.length) return { updated: 0, errors: [] as any[] };
   const supabase = getSupabaseAdmin();
-  const CHUNK = 300;
-  let saved = 0;
+  const errors: any[] = [];
+  let updated = 0;
 
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    const chunk = rows.slice(i, i + CHUNK);
-    const { error } = await supabase.from("deals").upsert(chunk, {
-      onConflict: "media_type,feed_key,asin",
-    });
-    if (error) throw new Error(error.message);
-    saved += chunk.length;
+  for (const row of rows) {
+    const { asin, ...fields } = row;
+    if (!asin) continue;
+
+    const { error } = await supabase
+      .from("deals")
+      .update(fields)
+      .eq("media_type", "vinyl")
+      .eq("feed_key", feedKey)
+      .eq("asin", asin);
+
+    if (error) {
+      errors.push({ asin, error: error.message });
+      continue;
+    }
+
+    updated += 1;
   }
 
-  return saved;
+  return { updated, errors };
 }
 
 async function revalidateActiveDeals(opts: {
@@ -266,16 +276,22 @@ async function revalidateActiveDeals(opts: {
     }
   }
 
-  const savedDiscounted = await upsertDealRows(discountedRows);
-  const savedInvalid = await upsertDealRows(invalidRows);
+  const { updated: updatedDiscounted, errors: updateDiscountedErrors } = await updateDealRows(
+    discountedRows,
+    opts.feedKey
+  );
+  const { updated: updatedInvalid, errors: updateInvalidErrors } = await updateDealRows(
+    invalidRows,
+    opts.feedKey
+  );
 
   return {
     ok: true,
     attempted_asins: asins.length,
     itemsFetched,
-    updated_discounted: savedDiscounted,
-    updated_invalid: savedInvalid,
-    errors: errorsOut,
+    updated_discounted: updatedDiscounted,
+    updated_invalid: updatedInvalid,
+    errors: [...errorsOut, ...updateDiscountedErrors, ...updateInvalidErrors],
   };
 }
 
@@ -320,11 +336,15 @@ export async function GET(req: Request) {
 
   let revalidateStats: any = null;
   if (revalidateActive) {
-    revalidateStats = await revalidateActiveDeals({
-      feedKey: "discount-15",
-      minDiscount: 15,
-      limit: activeLimit,
-    });
+    try {
+      revalidateStats = await revalidateActiveDeals({
+        feedKey: "discount-15",
+        minDiscount: 15,
+        limit: activeLimit,
+      });
+    } catch (e: any) {
+      revalidateStats = { ok: false, error: e?.message ?? String(e) };
+    }
   }
 
   const refreshResponse = await refreshMedia(req, {
