@@ -166,6 +166,7 @@ async function revalidateActiveDeals(opts: {
   feedKey: string;
   minDiscount: number;
   limit: number;
+  offset: number;
 }) {
   const supabase = getSupabaseAdmin();
   const now = new Date().toISOString();
@@ -177,7 +178,7 @@ async function revalidateActiveDeals(opts: {
     .eq("feed_key", opts.feedKey)
     .gte("discount_pct", opts.minDiscount)
     .order("last_seen_at", { ascending: true })
-    .limit(opts.limit);
+    .range(opts.offset, opts.offset + opts.limit - 1);
 
   if (error) throw new Error(error.message);
 
@@ -333,6 +334,7 @@ export async function GET(req: Request) {
     String(searchParams.get("revalidateActive") ?? "").toLowerCase()
   );
   const activeLimit = Math.min(Math.max(Number(searchParams.get("activeLimit") ?? "300"), 1), 1000);
+  const activeOffset = Math.max(0, Number(searchParams.get("activeOffset") ?? "0"));
 
   let revalidateStats: any = null;
   if (revalidateActive) {
@@ -341,6 +343,7 @@ export async function GET(req: Request) {
         feedKey: "discount-15",
         minDiscount: 15,
         limit: activeLimit,
+        offset: activeOffset,
       });
     } catch (e: any) {
       revalidateStats = { ok: false, error: e?.message ?? String(e) };
