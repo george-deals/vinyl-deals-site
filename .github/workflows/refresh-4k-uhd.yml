@@ -28,10 +28,28 @@ jobs:
             BASE="https://www.mediadealshub.com"
           fi
 
-          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=1&delayMs=1500&moviesPerRun=25"
-
           echo "Refreshing: $TYPE"
           echo "BASE: $BASE"
+
+          echo "Revalidating active $TYPE deals..."
+          REVALIDATE_LIMIT=100
+          REVALIDATE_TOTAL=200
+          revalidate_offset=0
+          while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
+            revalidate_url="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}"
+            echo "Revalidate offset=$revalidate_offset limit=$REVALIDATE_LIMIT"
+            if ! curl -sS --fail-with-body \
+              --connect-timeout 20 \
+              --max-time 180 \
+              "$revalidate_url" | head -c 2000; then
+              echo "WARNING: revalidation call failed; continuing to next chunk..."
+            fi
+            revalidate_offset=$((revalidate_offset + REVALIDATE_LIMIT))
+            sleep 1
+          done
+
+          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=1&delayMs=1500&moviesPerRun=25"
+
           echo "URL: $URL"
 
           for i in 1 2 3; do
