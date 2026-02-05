@@ -211,6 +211,11 @@ async function revalidateActiveDeals(opts: {
       continue;
     }
 
+    if (!items.length) {
+      errorsOut.push({ asins: chunk, error: { message: "paapi_empty_response" } });
+      continue;
+    }
+
     itemsFetched += items.length;
     const returned = new Set<string>();
 
@@ -220,6 +225,7 @@ async function revalidateActiveDeals(opts: {
       returned.add(asin);
 
       const listing = pickBuyBoxListingOnly(item);
+      if (!listing) continue;
       const existing = byAsin.get(asin) ?? { price_cents: null, list_price_cents: null };
 
       let priceCents = listing ? toCents(listing?.Price?.Amount) : null;
