@@ -155,8 +155,7 @@ export default async function BluRayDealsPage({
     .select(
       "asin,title,artist,image_url,amazon_url,price_cents,list_price_cents,currency,discount_pct,media_type,sales_rank,updated_at"
     )
-    .eq("category", "media")
-    .eq("media_type", "blu-ray")
+.eq("media_type", "blu-ray")
     .eq("feed_key", FEED_KEY)
     .gt("last_seen_at", cutoff)
     .gte("discount_pct", MIN_DISCOUNT);

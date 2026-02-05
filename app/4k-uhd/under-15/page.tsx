@@ -23,8 +23,7 @@ export default async function FourKUhdUnder15Page() {
   const { data } = await supabase
     .from("deals")
     .select("*")
-    .eq("category", "4k-uhd")
-    .lte("price", 15)
+.lte("price", 15)
     .limit(200);
 
   return (

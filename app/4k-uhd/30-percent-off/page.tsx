@@ -63,8 +63,7 @@ export default async function Uhd30PlusPage() {
     .select(
       "asin,title,artist,image_url,amazon_url,price_cents,list_price_cents,currency,discount_pct,sales_rank,updated_at"
     )
-    .eq("category", "media")
-    .eq("media_type", "4k-uhd")
+.eq("media_type", "4k-uhd")
     .eq("feed_key", FEED_KEY)
     .gt("last_seen_at", cutoff)
     .gte("discount_pct", 30)
