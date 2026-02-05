@@ -218,6 +218,7 @@ async function revalidateActiveDeals(opts: {
 
     itemsFetched += items.length;
     const returned = new Set<string>();
+    const isComplete = items.length >= chunk.length;
 
     for (const item of items) {
       const asin = item?.ASIN;
@@ -266,6 +267,11 @@ async function revalidateActiveDeals(opts: {
           updated_at: now,
         });
       }
+    }
+
+    if (!isComplete) {
+      errorsOut.push({ asins: chunk, error: { message: "paapi_partial_response", returned: items.length } });
+      continue;
     }
 
     for (const asin of chunk) {
