@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
-export const revalidate = 60;
+export const revalidate = 0;
 
 const FEED_KEY = "discount-15";
 const MIN_DISCOUNT = 15;

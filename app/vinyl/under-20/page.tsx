@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   robots: { index: true, follow: true },
 };
 
-export const revalidate = 60;
+export const revalidate = 0;
 
 const FEED_KEY = "under-20";
 const MAX_PRICE_CENTS = 2000;
