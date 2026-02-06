@@ -375,11 +375,15 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           }
 
           const savingsPct = Number(listing?.Price?.Savings?.Percentage);
-          const listCents = toCents(listing?.SavingBasis?.Amount);
+          const savingsAmt = toCents(listing?.Price?.Savings?.Amount);
+          let listCents = toCents(listing?.SavingBasis?.Amount);
+          if (!listCents && savingsAmt && priceCents) listCents = priceCents + savingsAmt;
 
           let discountPct: number | null = null;
           if (Number.isFinite(savingsPct) && savingsPct > 0) {
             discountPct = Math.round(savingsPct * 10) / 10;
+          } else if (savingsAmt && listCents) {
+            discountPct = Math.round((savingsAmt / listCents) * 1000) / 10;
           } else {
             discountPct = computeDiscountPct(priceCents, listCents);
           }

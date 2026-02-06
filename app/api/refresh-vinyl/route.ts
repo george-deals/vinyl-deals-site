@@ -231,15 +231,19 @@ async function revalidateActiveDeals(opts: {
 
       let priceCents = listing ? toCents(listing?.Price?.Amount) : null;
       let listCents = listing ? toCents(listing?.SavingBasis?.Amount) : null;
+      const savingsAmt = listing ? toCents(listing?.Price?.Savings?.Amount) : null;
 
       if (priceCents == null) priceCents = existing.price_cents;
       if (listCents == null) listCents = existing.list_price_cents;
+      if (!listCents && savingsAmt && priceCents) listCents = priceCents + savingsAmt;
 
       let discountPct: number | null = null;
       if (listing && priceCents != null) {
         const savingsPct = Number(listing?.Price?.Savings?.Percentage);
         if (Number.isFinite(savingsPct) && savingsPct > 0) {
           discountPct = Math.round(savingsPct * 10) / 10;
+        } else if (savingsAmt && listCents) {
+          discountPct = Math.round((savingsAmt / listCents) * 1000) / 10;
         } else {
           discountPct = computeDiscountPct(priceCents, listCents);
         }
