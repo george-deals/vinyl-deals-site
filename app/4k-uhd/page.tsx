@@ -60,7 +60,6 @@ function filterLabel(f: DiscountFilter) {
 
 async function getLastUpdated(mediaType: string, feedKey: string) {
   const supabase = getSupabaseAdmin();
-  const cutoff = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   const { data, error } = await supabase
     .from("refresh_runs")
@@ -148,7 +147,6 @@ export default async function FourKUhdDealsPage({
   const lastUpdatedIso = await getLastUpdated("4k-uhd", FEED_KEY);
 
   const supabase = getSupabaseAdmin();
-  const cutoff = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   let q = supabase
     .from("deals")
@@ -157,7 +155,6 @@ export default async function FourKUhdDealsPage({
     )
     .eq("media_type", "4k-uhd")
     .eq("feed_key", FEED_KEY)
-    .gt("last_seen_at", cutoff)
     .gte("discount_pct", MIN_DISCOUNT);
 
   if (filter === "15-20") q = q.gte("discount_pct", 15).lt("discount_pct", 20);

@@ -58,7 +58,6 @@ export default async function Vinyl30PlusPage() {
   const lastUpdatedIso = await getLastUpdated("vinyl", FEED_KEY);
 
   const supabase = getSupabaseAdmin();
-  const cutoffIso = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   const { data, error } = await supabase
     .from("deals")
@@ -66,7 +65,6 @@ export default async function Vinyl30PlusPage() {
 .eq("media_type", "vinyl")
     .eq("feed_key", FEED_KEY)
     .gte("discount_pct", MIN_DISCOUNT)
-    .gte("last_seen_at", cutoffIso)
     .order("sales_rank", { ascending: true, nullsFirst: false })
     .order("discount_pct", { ascending: false, nullsFirst: false })
     .order("updated_at", { ascending: false })

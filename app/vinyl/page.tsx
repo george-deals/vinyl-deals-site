@@ -115,8 +115,6 @@ export default async function VinylTopDealsPage({
 
   const supabase = getSupabaseAdmin();
 
-  const cutoffIso = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000).toISOString();
-
   let q = supabase
     .from("deals")
     .select(
@@ -124,8 +122,7 @@ export default async function VinylTopDealsPage({
     )
 .eq("media_type", "vinyl")
     .eq("feed_key", FEED_KEY)
-    .gte("discount_pct", MIN_DISCOUNT)
-    .gte("last_seen_at", cutoffIso);
+    .gte("discount_pct", MIN_DISCOUNT);
 
   if (filter === "15-20") q = q.gte("discount_pct", 15).lt("discount_pct", 20);
   if (filter === "20-30") q = q.gte("discount_pct", 20).lt("discount_pct", 30);

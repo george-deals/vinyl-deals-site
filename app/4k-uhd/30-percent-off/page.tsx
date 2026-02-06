@@ -56,7 +56,6 @@ export default async function Uhd30PlusPage() {
   const lastUpdatedIso = await getLastUpdatedIso("4k-uhd", FEED_KEY);
 
   const supabase = getSupabaseAdmin();
-  const cutoff = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   const { data, error } = await supabase
     .from("deals")
@@ -65,7 +64,6 @@ export default async function Uhd30PlusPage() {
     )
 .eq("media_type", "4k-uhd")
     .eq("feed_key", FEED_KEY)
-    .gt("last_seen_at", cutoff)
     .gte("discount_pct", 30)
     .order("sales_rank", { ascending: true, nullsFirst: false })
     .limit(500);

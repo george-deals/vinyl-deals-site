@@ -58,7 +58,6 @@ export default async function CdTopDealsPage() {
   const lastUpdatedIso = await getLastUpdated("cd", FEED_KEY);
 
   const supabase = getSupabaseAdmin();
-  const cutoffIso = new Date(Date.now() - STALE_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
   const { data, error } = await supabase
     .from("deals")
@@ -68,7 +67,6 @@ export default async function CdTopDealsPage() {
 .eq("media_type", "cd")
     .eq("feed_key", FEED_KEY)
     .gte("discount_pct", MIN_DISCOUNT)
-    .gte("last_seen_at", cutoffIso)
     .order("sales_rank", { ascending: true, nullsFirst: false })
     .order("discount_pct", { ascending: false, nullsFirst: false })
     .order("updated_at", { ascending: false })
