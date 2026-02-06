@@ -260,6 +260,16 @@ async function revalidateActiveDeals(opts: {
           updated_at: now,
           last_seen_at: now,
         });
+      } else if (discountPct == null) {
+        // No reliable discount info; update prices but keep existing discount_pct to avoid wiping feed.
+        discountedRows.push({
+          asin,
+          media_type: "vinyl",
+          feed_key: opts.feedKey,
+          price_cents: priceCents,
+          list_price_cents: listCents,
+          updated_at: now,
+        });
       } else {
         invalidRows.push({
           asin,
