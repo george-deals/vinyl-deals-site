@@ -33,7 +33,7 @@ jobs:
 
           echo "Revalidating active $TYPE deals..."
           REVALIDATE_LIMIT=100
-          REVALIDATE_TOTAL=200
+          REVALIDATE_TOTAL=400
           revalidate_offset=0
           while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
             revalidate_url="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}"
