@@ -103,6 +103,7 @@ async function paapiGetItems(asins: string[]) {
       "Images.Primary.Large",
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
+      "Offers.Listings.ListPrice",
       "Offers.Listings.IsBuyBoxWinner",
       "Offers.Listings.MerchantInfo",
     ],
@@ -230,7 +231,7 @@ async function revalidateActiveDeals(opts: {
       const existing = byAsin.get(asin) ?? { price_cents: null, list_price_cents: null };
 
       let priceCents = listing ? toCents(listing?.Price?.Amount) : null;
-      let listCents = listing ? toCents(listing?.SavingBasis?.Amount) : null;
+      let listCents = listing ? (toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount)) : null;
       const savingsAmt = listing ? toCents(listing?.Price?.Savings?.Amount) : null;
 
       if (priceCents == null) priceCents = existing.price_cents;

@@ -186,6 +186,7 @@ async function paapiSearch({
       "Images.Primary.Large",
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
+      "Offers.Listings.ListPrice",
       "Offers.Listings.IsBuyBoxWinner",
       "Offers.Listings.MerchantInfo",
       "BrowseNodeInfo.WebsiteSalesRank",
@@ -376,7 +377,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
           const savingsPct = Number(listing?.Price?.Savings?.Percentage);
           const savingsAmt = toCents(listing?.Price?.Savings?.Amount);
-          let listCents = toCents(listing?.SavingBasis?.Amount);
+          let listCents = toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount);
           if (!listCents && savingsAmt && priceCents) listCents = priceCents + savingsAmt;
 
           let discountPct: number | null = null;
