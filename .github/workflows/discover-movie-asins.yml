@@ -11,9 +11,18 @@ jobs:
 
     steps:
       - name: Call discover movie endpoint in small batches
+        env:
+          BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          TOKEN: ${{ secrets.REFRESH_TOKEN }}
         run: |
-          BASE="https://YOURDOMAIN.com"
-          TOKEN="${{ secrets.REFRESH_TOKEN }}"
+          set -euo pipefail
+
+          BASE="$(echo "${BASE_URL:-}" | tr -d '\r\n' | xargs)"
+          BASE="${BASE%/}"
+          if [ -z "$BASE" ]; then
+            BASE="https://www.mediadealshub.com"
+          fi
+
           BATCH=3
 
           for i in {0..20}; do
