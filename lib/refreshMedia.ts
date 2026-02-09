@@ -186,7 +186,6 @@ async function paapiSearch({
       "Images.Primary.Large",
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
-      "Offers.Listings.ListPrice",
       "Offers.Listings.IsBuyBoxWinner",
       "Offers.Listings.MerchantInfo",
       "BrowseNodeInfo.WebsiteSalesRank",
