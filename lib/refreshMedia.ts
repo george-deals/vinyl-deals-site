@@ -9,7 +9,6 @@ const DEFAULT_MIN_DISCOUNT = 15;
 const ITEM_COUNT = 10;
 const MAX_ITEMPAGE = 10;
 const MAX_PAGES_HARD_CAP = 30;
-const STALE_PURGE_DAYS = 3;
 
 const PAAPI_MIN_INTERVAL_MS = 1200;
 const PAAPI_429_BASE_BACKOFF_MS = 6000;
@@ -456,38 +455,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       }
     } catch {}
 
-    const cutoff = new Date(Date.now() - STALE_PURGE_DAYS * 24 * 60 * 60 * 1000).toISOString();
-
-    if (mode === "discount") {
-      const del = await supabase
-        .from("deals")
-        .delete()
-        .eq("media_type", config.media_type)
-        .eq("feed_key", feedKey)
-        .lt("discount_pct", minDiscount)
-        .lt("last_seen_at", cutoff);
-
-      if (del.error) throw new Error(del.error.message);
-
-      const delNull = await supabase
-        .from("deals")
-        .delete()
-        .eq("media_type", config.media_type)
-        .eq("feed_key", feedKey)
-        .is("discount_pct", null)
-        .lt("last_seen_at", cutoff);
-
-      if (delNull.error) throw new Error(delNull.error.message);
-    } else {
-      const delOld = await supabase
-        .from("deals")
-        .delete()
-        .eq("media_type", config.media_type)
-        .eq("feed_key", feedKey)
-        .lt("last_seen_at", cutoff);
-
-      if (delOld.error) throw new Error(delOld.error.message);
-    }
+    // NOTE: We intentionally do not delete deals rows here.
+    // Deals should be invalidated via discount_pct updates, not removed.
 
     if (runId) {
       try {

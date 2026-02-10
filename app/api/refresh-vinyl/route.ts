@@ -10,6 +10,12 @@ export const runtime = "nodejs";
 const BUILD_ID = "vinyl-getitems-2026-02-10";
 const PAAPI_ITEM_COUNT = 10; // PA-API GetItems max ItemIds is 10
 
+const PAAPI_MIN_INTERVAL_MS = 1200;
+const PAAPI_429_BASE_BACKOFF_MS = 6000;
+const PAAPI_429_MAX_BACKOFF_MS = 60000;
+const PAAPI_TRANSIENT_BASE_BACKOFF_MS = 1000;
+const PAAPI_TRANSIENT_MAX_BACKOFF_MS = 15000;
+
 const CORE_KEYWORDS = [
   "vinyl",
   "vinyl record",
@@ -45,6 +51,23 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function jitter(ms: number) {
+  return Math.floor(ms * (0.85 + Math.random() * 0.3));
+}
+
+let _paapiLastAt = 0;
+let _paapiChain: Promise<void> = Promise.resolve();
+
+async function paapiGate() {
+  _paapiChain = _paapiChain.then(async () => {
+    const now = Date.now();
+    const wait = Math.max(0, _paapiLastAt + PAAPI_MIN_INTERVAL_MS - now);
+    if (wait > 0) await sleep(wait);
+    _paapiLastAt = Date.now();
+  });
+  await _paapiChain;
+}
+
 function extractAxiosError(e: any) {
   const status = e?.response?.status ?? null;
   const data = e?.response?.data ?? null;
@@ -53,22 +76,48 @@ function extractAxiosError(e: any) {
   return { status, code, message };
 }
 
-async function withRetry<T>(fn: () => Promise<T>, attempts = 4) {
+async function withRetry<T>(fn: () => Promise<T>, attempts = 6) {
   let lastErr: any = null;
+
   for (let i = 0; i < attempts; i++) {
     try {
+      await paapiGate();
       return await fn();
     } catch (e: any) {
       lastErr = e;
-      const status = e?.response?.status;
-      const code = e?.response?.data?.Errors?.[0]?.Code;
-      if (status === 429 || code === "TooManyRequests") {
-        await sleep(600 * Math.pow(2, i));
+      const status = e?.response?.status ?? null;
+      const code = e?.response?.data?.Errors?.[0]?.Code ?? null;
+
+      const is429 = status === 429 || code === "TooManyRequests";
+      const isTransient =
+        is429 ||
+        status === 408 ||
+        status === 425 ||
+        status === 500 ||
+        status === 502 ||
+        status === 503 ||
+        status === 504 ||
+        code === "RequestTimeout" ||
+        code === "ServiceUnavailable" ||
+        code === "InternalServerError";
+
+      if (!isTransient) throw e;
+      if (i === attempts - 1) break;
+
+      if (is429) {
+        const backoff = Math.min(PAAPI_429_BASE_BACKOFF_MS * Math.pow(2, i), PAAPI_429_MAX_BACKOFF_MS);
+        await sleep(jitter(backoff));
         continue;
       }
-      throw e;
+
+      const backoff = Math.min(
+        PAAPI_TRANSIENT_BASE_BACKOFF_MS * Math.pow(2, i),
+        PAAPI_TRANSIENT_MAX_BACKOFF_MS
+      );
+      await sleep(jitter(backoff));
     }
   }
+
   throw lastErr;
 }
 
@@ -681,7 +730,8 @@ export async function GET(req: Request) {
   }
 
   const artistKeywords = [...hotArtists, ...catalogBatch].map((a) => `"${a}" vinyl`);
-  const keywords = uniqClean([...CORE_KEYWORDS, ...artistKeywords]);
+  const MAX_KEYWORDS = 80;
+  const keywords = uniqClean([...CORE_KEYWORDS, ...artistKeywords]).slice(0, MAX_KEYWORDS);
 
   const revalidateActive = ["1", "true", "yes"].includes(
     String(searchParams.get("revalidateActive") ?? "").toLowerCase()
