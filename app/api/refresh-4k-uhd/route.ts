@@ -96,7 +96,6 @@ async function paapiGetItems(asins: string[]) {
       "Images.Primary.Large",
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
-      "Offers.Listings.ListPrice",
       "Offers.Listings.IsBuyBoxWinner",
       "Offers.Listings.MerchantInfo",
     ],
