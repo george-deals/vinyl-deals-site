@@ -32,15 +32,15 @@ jobs:
           echo "BASE: $BASE"
 
           echo "Revalidating active $TYPE deals..."
-          REVALIDATE_LIMIT=100
-          REVALIDATE_TOTAL=400
+          REVALIDATE_LIMIT=50
+          REVALIDATE_TOTAL=200
           revalidate_offset=0
           while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
             revalidate_url="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}"
             echo "Revalidate offset=$revalidate_offset limit=$REVALIDATE_LIMIT"
             if ! curl -sS --fail-with-body \
               --connect-timeout 20 \
-              --max-time 180 \
+              --max-time 60 \
               "$revalidate_url" | head -c 2000; then
               echo "WARNING: revalidation call failed; continuing to next chunk..."
             fi
