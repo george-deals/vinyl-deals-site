@@ -1,12 +1,13 @@
 import axios from "axios";
 import aws4 from "aws4";
-import { refreshMedia } from "@/lib/refreshMedia";
+import { randomUUID } from "crypto";
 import { readArtistFile } from "@/lib/readArtistFile";
 import { rotateSlice } from "@/lib/rotateSlice";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 export const runtime = "nodejs";
 
+const BUILD_ID = "vinyl-getitems-2026-02-10";
 const PAAPI_ITEM_COUNT = 10; // PA-API GetItems max ItemIds is 10
 
 const CORE_KEYWORDS = [
@@ -106,6 +107,9 @@ async function paapiGetItems(asins: string[]) {
       "Offers.Listings.ListPrice",
       "Offers.Listings.IsBuyBoxWinner",
       "Offers.Listings.MerchantInfo",
+      "BrowseNodeInfo.WebsiteSalesRank",
+      "BrowseNodeInfo.BrowseNodes",
+      "BrowseNodeInfo.BrowseNodes.Ancestor",
     ],
   };
 
@@ -131,8 +135,120 @@ async function paapiGetItems(asins: string[]) {
     timeout: 15000,
   });
 
-  // GetItems returns items in ItemsResult.Items
   return resp.data?.ItemsResult?.Items || [];
+}
+
+async function paapiSearch({
+  keyword,
+  itemPage,
+  searchIndex,
+}: {
+  keyword: string;
+  itemPage: number;
+  searchIndex: string;
+}) {
+  const host = process.env.AMAZON_HOST!;
+  const region = process.env.AMAZON_REGION!;
+  const accessKey = process.env.AMAZON_ACCESS_KEY!;
+  const secretKey = process.env.AMAZON_SECRET_KEY!;
+  const partnerTag = process.env.AMAZON_PARTNER_TAG!;
+
+  const body = {
+    Keywords: keyword,
+    SearchIndex: searchIndex,
+    ItemCount: PAAPI_ITEM_COUNT,
+    ItemPage: itemPage,
+    Condition: "New",
+    PartnerTag: partnerTag,
+    PartnerType: "Associates",
+    Resources: [
+      "ItemInfo.Title",
+      "ItemInfo.ByLineInfo",
+      "Images.Primary.Large",
+      "BrowseNodeInfo.WebsiteSalesRank",
+      "BrowseNodeInfo.BrowseNodes",
+      "BrowseNodeInfo.BrowseNodes.Ancestor",
+    ],
+  };
+
+  const signed = aws4.sign(
+    {
+      host,
+      method: "POST",
+      path: "/paapi5/searchitems",
+      service: "ProductAdvertisingAPI",
+      region,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "content-encoding": "amz-1.0",
+        "x-amz-target": "com.amazon.paapi5.v1.ProductAdvertisingAPIv1.SearchItems",
+      },
+      body: JSON.stringify(body),
+    },
+    { accessKeyId: accessKey, secretAccessKey: secretKey }
+  );
+
+  const resp = await axios.post(`https://${host}/paapi5/searchitems`, signed.body, {
+    headers: signed.headers as any,
+    timeout: 15000,
+  });
+
+  return resp.data?.SearchResult?.Items || [];
+}
+
+function extractArtist(item: any): string | null {
+  const by = item?.ItemInfo?.ByLineInfo;
+
+  const contributors = by?.Contributors;
+  if (Array.isArray(contributors) && contributors.length) {
+    const primary =
+      contributors.find((c: any) => c?.RoleType === "Primary") ??
+      contributors.find((c: any) => String(c?.Role || "").toLowerCase().includes("artist")) ??
+      contributors[0];
+
+    const name = primary?.Name;
+    if (typeof name === "string" && name.trim()) return name.trim();
+  }
+
+  const brand = by?.Brand?.DisplayValue;
+  if (typeof brand === "string" && brand.trim()) return brand.trim();
+
+  const manu = by?.Manufacturer?.DisplayValue;
+  if (typeof manu === "string" && manu.trim()) return manu.trim();
+
+  return null;
+}
+
+function getPrimaryBrowseNodeId(item: any): number | null {
+  const ws = item?.BrowseNodeInfo?.WebsiteSalesRank;
+  const wsId = Number(ws?.BrowseNodeId);
+  if (Number.isFinite(wsId) && wsId > 0) return wsId;
+
+  const nodes = item?.BrowseNodeInfo?.BrowseNodes;
+  if (Array.isArray(nodes) && nodes.length) {
+    const id = Number(nodes[0]?.Id);
+    if (Number.isFinite(id) && id > 0) return id;
+  }
+
+  return null;
+}
+
+async function upsertChunked(rows: any[]) {
+  if (!rows.length) return 0;
+  const supabase = getSupabaseAdmin();
+  const CHUNK = 500;
+  let saved = 0;
+
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const chunk = rows.slice(i, i + CHUNK);
+    const { error } = await supabase.from("deals").upsert(chunk, {
+      onConflict: "media_type,feed_key,asin",
+    });
+    if (error) throw new Error(error.message);
+    saved += chunk.length;
+  }
+
+  return saved;
 }
 
 async function updateDealRows(rows: any[], feedKey: string) {
@@ -231,7 +347,8 @@ async function revalidateActiveDeals(opts: {
       const existing = byAsin.get(asin) ?? { price_cents: null, list_price_cents: null };
 
       let priceCents = listing ? toCents(listing?.Price?.Amount) : null;
-      let listCents = listing ? (toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount)) : null;
+      let listCents =
+        listing ? (toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount)) : null;
       const savingsAmt = listing ? toCents(listing?.Price?.Savings?.Amount) : null;
 
       if (priceCents == null) priceCents = existing.price_cents;
@@ -262,7 +379,6 @@ async function revalidateActiveDeals(opts: {
           last_seen_at: now,
         });
       } else if (discountPct == null) {
-        // No reliable discount info; update prices but keep existing discount_pct to avoid wiping feed.
         discountedRows.push({
           asin,
           media_type: "vinyl",
@@ -323,6 +439,220 @@ async function revalidateActiveDeals(opts: {
   };
 }
 
+async function refreshVinylViaGetItems(req: Request, keywords: string[]) {
+  const url = new URL(req.url);
+  const maxPages = Math.min(Math.max(Number(url.searchParams.get("maxPages") ?? "1"), 1), 10);
+  const delayMs = Math.min(Math.max(Number(url.searchParams.get("delayMs") ?? "0"), 0), 5000);
+  const minDiscount = Math.min(Math.max(Number(url.searchParams.get("min_discount") ?? "15"), 0), 90);
+
+  const now = new Date().toISOString();
+  const syncId = randomUUID();
+
+  const stats: any = {
+    build_id: BUILD_ID,
+    sync_id: syncId,
+    media_type: "vinyl",
+    feed_key: "discount-15",
+    min_discount: minDiscount,
+    maxPages,
+    delayMs,
+    keywords: keywords.length,
+    items_returned: 0,
+    items_with_discount_data: 0,
+    filtered_under_min_discount: 0,
+    kept: 0,
+  };
+
+  const supabase = getSupabaseAdmin();
+  let runId: number | null = null;
+  try {
+    const { data: run } = await supabase
+      .from("refresh_runs")
+      .insert({
+        media_type: "vinyl",
+        feed_key: "discount-15",
+        build_id: BUILD_ID,
+        sync_id: syncId,
+        max_pages: maxPages,
+        delay_ms: delayMs,
+        started_at: now,
+        ok: false,
+      })
+      .select("id")
+      .single();
+
+    runId = (run?.id as any) ?? null;
+  } catch {
+    runId = null;
+  }
+
+  const seen = new Set<string>();
+  const keep: any[] = [];
+  const errors: any[] = [];
+
+  try {
+    for (const kw of keywords) {
+      for (let page = 1; page <= maxPages; page++) {
+        let items: any[] = [];
+        try {
+          items = await withRetry(() =>
+            paapiSearch({ keyword: kw, itemPage: page, searchIndex: "Music" })
+          );
+        } catch (e: any) {
+          errors.push({ keyword: kw, page, error: extractAxiosError(e) });
+          break;
+        }
+
+        if (!items.length) break;
+        stats.items_returned += items.length;
+
+        const asins: string[] = [];
+        const itemMeta = new Map<string, any>();
+        for (const item of items) {
+          const asin = item?.ASIN;
+          if (!asin || seen.has(asin)) continue;
+          asins.push(asin);
+          itemMeta.set(asin, item);
+        }
+
+        const chunks: string[][] = [];
+        for (let i = 0; i < asins.length; i += PAAPI_ITEM_COUNT) {
+          chunks.push(asins.slice(i, i + PAAPI_ITEM_COUNT));
+        }
+
+        for (const chunk of chunks) {
+          let got: any[] = [];
+          try {
+            got = await withRetry(() => paapiGetItems(chunk));
+          } catch (e: any) {
+            errors.push({ asins: chunk, error: extractAxiosError(e) });
+            continue;
+          }
+
+          if (!got.length) continue;
+
+          for (const item of got) {
+            const asin = item?.ASIN;
+            if (!asin || seen.has(asin)) continue;
+
+            const listing = pickBuyBoxListingOnly(item);
+            if (!listing) continue;
+
+            const priceCents = toCents(listing?.Price?.Amount);
+            if (!priceCents) continue;
+
+            const savingsPct = Number(listing?.Price?.Savings?.Percentage);
+            const savingsAmt = toCents(listing?.Price?.Savings?.Amount);
+            let listCents =
+              toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount);
+            if (!listCents && savingsAmt) listCents = priceCents + savingsAmt;
+
+            let discountPct: number | null = null;
+            if (Number.isFinite(savingsPct) && savingsPct > 0) {
+              discountPct = Math.round(savingsPct * 10) / 10;
+            } else if (savingsAmt && listCents) {
+              discountPct = Math.round((savingsAmt / listCents) * 1000) / 10;
+            } else {
+              discountPct = computeDiscountPct(priceCents, listCents);
+            }
+
+            if (discountPct !== null) stats.items_with_discount_data += 1;
+            if (discountPct === null || discountPct < minDiscount) {
+              stats.filtered_under_min_discount += 1;
+              continue;
+            }
+
+            const meta = itemMeta.get(asin);
+            const rank = Number(meta?.BrowseNodeInfo?.WebsiteSalesRank?.SalesRank) || null;
+            const browseNodeId = getPrimaryBrowseNodeId(meta);
+            const artist = extractArtist(meta);
+
+            keep.push({
+              asin,
+              title: meta?.ItemInfo?.Title?.DisplayValue ?? asin,
+              artist,
+              image_url: meta?.Images?.Primary?.Large?.URL ?? null,
+              amazon_url: `https://www.amazon.com/dp/${asin}?tag=${process.env.AMAZON_PARTNER_TAG}`,
+              price_cents: priceCents,
+              list_price_cents: listCents,
+              currency: listing?.Price?.Currency ?? null,
+              discount_pct: discountPct,
+              category: "media",
+              media_type: "vinyl",
+              feed_key: "discount-15",
+              sales_rank: rank,
+              genre: null,
+              browse_node_id: browseNodeId,
+              updated_at: now,
+              last_seen_at: now,
+              sync_id: syncId,
+            });
+
+            seen.add(asin);
+            stats.kept += 1;
+          }
+        }
+
+        if (delayMs > 0) await sleep(delayMs);
+      }
+    }
+
+    keep.sort((a, b) => (a.sales_rank ?? 1e12) - (b.sales_rank ?? 1e12));
+    const saved = await upsertChunked(keep);
+
+    if (runId) {
+      try {
+        await supabase
+          .from("refresh_runs")
+          .update({
+            ok: true,
+            finished_at: new Date().toISOString(),
+            found: keep.length,
+            saved,
+            stats,
+            errors,
+          })
+          .eq("id", runId);
+      } catch {}
+    }
+
+    return Response.json({
+      ok: true,
+      media_type: "vinyl",
+      feed_key: "discount-15",
+      min_discount: minDiscount,
+      maxPages,
+      delayMs,
+      found: keep.length,
+      saved,
+      build_id: BUILD_ID,
+      sync_id: syncId,
+      stats,
+      errors,
+    });
+  } catch (e: any) {
+    if (runId) {
+      try {
+        await supabase
+          .from("refresh_runs")
+          .update({
+            ok: false,
+            finished_at: new Date().toISOString(),
+            error: e?.message ?? String(e),
+            stats,
+            errors,
+          })
+          .eq("id", runId);
+      } catch {}
+    }
+
+    return Response.json(
+      { ok: false, error: e?.message ?? String(e), build_id: BUILD_ID, sync_id: syncId, stats, errors },
+      { status: 500 }
+    );
+  }
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
@@ -331,10 +661,7 @@ export async function GET(req: Request) {
     return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  // Large keyword pool is OK; refreshMedia will chunk execution via maxKeywords/keywordOffset + time budget.
   const hotPerRun = Number(searchParams.get("hotPerRun") ?? "50");
-
-  // Catalog selection: if catalogOffset is provided, use deterministic paging; otherwise rotate by hour.
   const catalogPerRun = Number(searchParams.get("catalogPerRun") ?? "100");
   const catalogOffsetRaw = searchParams.get("catalogOffset");
 
@@ -377,21 +704,7 @@ export async function GET(req: Request) {
     }
   }
 
-  const refreshResponse = await refreshMedia(req, {
-    media_type: "vinyl",
-    searchIndex: "Music",
-    keywords,
-    feed_key: "discount-15",
-    mode: "discount",
-    min_discount: 15,
-  });
-
+  const refreshResponse = await refreshVinylViaGetItems(req, keywords);
   const refreshBody = await refreshResponse.json();
-  return Response.json(
-    {
-      ...refreshBody,
-      revalidate_active: revalidateStats,
-    },
-    { status: refreshResponse.status }
-  );
+  return Response.json({ ...refreshBody, revalidate_active: revalidateStats }, { status: refreshResponse.status });
 }
