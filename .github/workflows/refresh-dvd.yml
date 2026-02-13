@@ -28,16 +28,16 @@ jobs:
             BASE="https://www.mediadealshub.com"
           fi
 
-          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=1&delayMs=1500&moviesPerRun=25"
+          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=1&delayMs=0&moviesPerRun=10"
 
           echo "Refreshing: $TYPE"
           echo "BASE: $BASE"
           echo "URL: $URL"
 
-          for i in 1 2 3; do
+          for i in 1 2; do
             echo "Attempt $i..."
             set +e
-            RESP=$(curl -sS --fail --max-time 240 "$URL")
+            RESP=$(curl -sS --fail --max-time 120 "$URL")
             CODE=$?
             set -e
             if [ $CODE -eq 0 ]; then echo "$RESP"; exit 0; fi

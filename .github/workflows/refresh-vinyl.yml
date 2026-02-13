@@ -20,16 +20,16 @@ jobs:
           set -euo pipefail
 
           # Each API call remains small; we just make many calls.
-          PER_RUN=25
+          PER_RUN=10
           MAXPAGES=1
           DELAYMS=0
           MIN_DISCOUNT=15
 
           # Total catalog coverage per workflow run
-          TOTAL=500
+          TOTAL=100
 
           # Throttle between chunks
-          SLEEP_BETWEEN_CHUNKS=2
+          SLEEP_BETWEEN_CHUNKS=1
 
           if [ -z "${BASE:-}" ]; then
             echo "ERROR: REFRESH_BASE_URL secret is empty"
@@ -44,15 +44,15 @@ jobs:
           echo "Refreshing vinyl deals in chunks..."
 
           echo "Reseeding vinyl from tracked_asins (one-time safety)..."
-          RESEED_LIMIT=200
-          RESEED_TOTAL=400
+          RESEED_LIMIT=25
+          RESEED_TOTAL=25
           reseed_offset=0
           while [ $reseed_offset -lt $RESEED_TOTAL ]; do
             reseed_url="${BASE}/api/reseed-vinyl-from-tracked?token=${TOKEN}&batchSize=${RESEED_LIMIT}&offset=${reseed_offset}&min_discount=${MIN_DISCOUNT}"
             echo "Reseed offset=${reseed_offset} limit=${RESEED_LIMIT}"
             if ! curl -sS --fail-with-body \
               --connect-timeout 20 \
-              --max-time 120 \
+              --max-time 45 \
               "$reseed_url" | head -c 2000; then
               echo "WARNING: reseed call failed; continuing..."
             fi
@@ -61,15 +61,15 @@ jobs:
           done
 
           echo "Revalidating active vinyl deals..."
-          REVALIDATE_LIMIT=50
-          REVALIDATE_TOTAL=200
+          REVALIDATE_LIMIT=25
+          REVALIDATE_TOTAL=50
           revalidate_offset=0
           while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
             revalidate_url="${BASE}/api/refresh-vinyl?token=${TOKEN}&revalidateActive=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}"
             echo "Revalidate offset=${revalidate_offset} limit=${REVALIDATE_LIMIT}"
             if ! curl -sS --fail-with-body \
               --connect-timeout 20 \
-              --max-time 60 \
+              --max-time 45 \
               "$revalidate_url" | head -c 2000; then
               echo "WARNING: revalidation call failed; continuing to next chunk..."
             fi
@@ -80,24 +80,24 @@ jobs:
           offset=0
           while [ $offset -lt $TOTAL ]; do
             echo "Chunk offset=$offset size=$PER_RUN"
-            url="${BASE}/api/refresh-vinyl?token=${TOKEN}&min_discount=${MIN_DISCOUNT}&maxPages=${MAXPAGES}&delayMs=${DELAYMS}&catalogPerRun=${PER_RUN}&catalogOffset=${offset}"
+            url="${BASE}/api/refresh-vinyl?token=${TOKEN}&min_discount=${MIN_DISCOUNT}&maxPages=${MAXPAGES}&delayMs=${DELAYMS}&catalogPerRun=${PER_RUN}&catalogOffset=${offset}&hotPerRun=10&includeHot=0"
 
             attempt=1
-            max_attempts=8
+            max_attempts=2
             ok=0
 
             while [ $attempt -le $max_attempts ]; do
               echo "Request attempt $attempt/$max_attempts..."
               if curl -sS --fail-with-body \
                 --connect-timeout 20 \
-                --max-time 180 \
+                --max-time 75 \
                 "$url" | head -c 2000; then
                 ok=1
                 break
               fi
 
               echo "Request failed (attempt $attempt). Sleeping before retry..."
-              sleep $((attempt * 10))
+              sleep $((attempt * 5))
               attempt=$((attempt + 1))
             done
 

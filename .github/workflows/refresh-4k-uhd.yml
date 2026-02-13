@@ -32,15 +32,15 @@ jobs:
           echo "BASE: $BASE"
 
           echo "Revalidating active $TYPE deals..."
-          REVALIDATE_LIMIT=50
-          REVALIDATE_TOTAL=200
+          REVALIDATE_LIMIT=25
+          REVALIDATE_TOTAL=50
           revalidate_offset=0
           while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
             revalidate_url="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}"
             echo "Revalidate offset=$revalidate_offset limit=$REVALIDATE_LIMIT"
             if ! curl -sS --fail-with-body \
               --connect-timeout 20 \
-              --max-time 60 \
+              --max-time 30 \
               "$revalidate_url" | head -c 2000; then
               echo "WARNING: revalidation call failed; continuing to next chunk..."
             fi
@@ -48,14 +48,14 @@ jobs:
             sleep 1
           done
 
-          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=1&delayMs=1500&moviesPerRun=25"
+          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=1&delayMs=0&moviesPerRun=10"
 
           echo "URL: $URL"
 
-          for i in 1 2 3; do
+          for i in 1 2; do
             echo "Attempt $i..."
             set +e
-            RESP=$(curl -sS --fail --max-time 240 "$URL")
+            RESP=$(curl -sS --fail --max-time 120 "$URL")
             CODE=$?
             set -e
             if [ $CODE -eq 0 ]; then echo "$RESP"; exit 0; fi

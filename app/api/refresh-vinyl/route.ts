@@ -709,14 +709,17 @@ export async function GET(req: Request) {
     return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const hotPerRun = Number(searchParams.get("hotPerRun") ?? "50");
-  const catalogPerRun = Number(searchParams.get("catalogPerRun") ?? "100");
+  const hotPerRun = Number(searchParams.get("hotPerRun") ?? "10");
+  const catalogPerRun = Number(searchParams.get("catalogPerRun") ?? "25");
   const catalogOffsetRaw = searchParams.get("catalogOffset");
+  const includeHotParam = String(searchParams.get("includeHot") ?? "").toLowerCase();
+  const includeHot =
+    catalogOffsetRaw == null || ["1", "true", "yes"].includes(includeHotParam);
 
   const hotArtistsAll = await readArtistFile("data/hot-artists.txt");
   const catalogArtistsAll = await readArtistFile("data/catalog-artists.txt");
 
-  const hotArtists = hotArtistsAll.slice(0, Math.max(0, hotPerRun));
+  const hotArtists = includeHot ? hotArtistsAll.slice(0, Math.max(0, hotPerRun)) : [];
 
   let catalogBatch: string[] = [];
   if (catalogOffsetRaw != null) {
@@ -730,7 +733,7 @@ export async function GET(req: Request) {
   }
 
   const artistKeywords = [...hotArtists, ...catalogBatch].map((a) => `"${a}" vinyl`);
-  const MAX_KEYWORDS = 80;
+  const MAX_KEYWORDS = 35;
   const keywords = uniqClean([...CORE_KEYWORDS, ...artistKeywords]).slice(0, MAX_KEYWORDS);
 
   const revalidateActive = ["1", "true", "yes"].includes(
