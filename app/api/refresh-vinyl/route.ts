@@ -342,6 +342,85 @@ async function bootstrapFromBucketed(minDiscount: number, syncId: string, nowIso
   return upsertChunked(rows);
 }
 
+async function bootstrapFromTracked(minDiscount: number, syncId: string, nowIso: string, deadlineAt: number) {
+  const supabase = getSupabaseAdmin();
+  const { data: tracked, error } = await supabase
+    .from("tracked_asins")
+    .select("asin")
+    .eq("media_type", "vinyl")
+    .eq("is_active", true)
+    .order("last_seen_at", { ascending: false })
+    .limit(600);
+
+  if (error) throw new Error(error.message);
+
+  const asins = (tracked ?? []).map((r: any) => r?.asin).filter(Boolean);
+  if (!asins.length) return 0;
+
+  const keep: any[] = [];
+  for (let i = 0; i < asins.length; i += PAAPI_ITEM_COUNT) {
+    if (Date.now() >= deadlineAt) break;
+    const chunk = asins.slice(i, i + PAAPI_ITEM_COUNT);
+
+    let items: any[] = [];
+    try {
+      items = await withRetry(() => paapiGetItems(chunk));
+    } catch {
+      continue;
+    }
+
+    for (const item of items) {
+      const asin = item?.ASIN;
+      if (!asin) continue;
+      const listing = pickBuyBoxListingOnly(item);
+      if (!listing) continue;
+
+      const priceCents = toCents(listing?.Price?.Amount);
+      if (!priceCents) continue;
+
+      const savingsPct = Number(listing?.Price?.Savings?.Percentage);
+      const savingsAmt = toCents(listing?.Price?.Savings?.Amount);
+      let listCents = toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount);
+      if (!listCents && savingsAmt) listCents = priceCents + savingsAmt;
+
+      let discountPct: number | null = null;
+      if (Number.isFinite(savingsPct) && savingsPct > 0) {
+        discountPct = Math.round(savingsPct * 10) / 10;
+      } else if (savingsAmt && listCents) {
+        discountPct = Math.round((savingsAmt / listCents) * 1000) / 10;
+      } else {
+        discountPct = computeDiscountPct(priceCents, listCents);
+      }
+
+      if (discountPct == null || discountPct < minDiscount) continue;
+
+      keep.push({
+        asin,
+        title: item?.ItemInfo?.Title?.DisplayValue ?? asin,
+        artist: extractArtist(item),
+        image_url: item?.Images?.Primary?.Large?.URL ?? null,
+        amazon_url: "https://www.amazon.com/dp/" + asin + "?tag=" + process.env.AMAZON_PARTNER_TAG,
+        price_cents: priceCents,
+        list_price_cents: listCents,
+        currency: listing?.Price?.Currency ?? "USD",
+        discount_pct: discountPct,
+        category: "media",
+        media_type: "vinyl",
+        feed_key: "discount-15",
+        sales_rank: Number(item?.BrowseNodeInfo?.WebsiteSalesRank?.SalesRank) || null,
+        genre: null,
+        browse_node_id: getPrimaryBrowseNodeId(item),
+        updated_at: nowIso,
+        last_seen_at: nowIso,
+        sync_id: syncId,
+      });
+    }
+  }
+
+  if (!keep.length) return 0;
+  return upsertChunked(keep);
+}
+
 async function updateDealRows(rows: any[], feedKey: string) {
   if (!rows.length) return { updated: 0, errors: [] as any[] };
   const supabase = getSupabaseAdmin();
@@ -702,10 +781,20 @@ async function refreshVinylViaGetItems(req: Request, keywords: string[]) {
     let saved = await upsertChunked(keep);
 
     if (saved === 0) {
-      const seeded = await bootstrapFromBucketed(minDiscount, syncId, now);
-      if (seeded > 0) {
-        saved = seeded;
-        stats.bootstrap_seeded = seeded;
+      const seededBucketed = await bootstrapFromBucketed(minDiscount, syncId, now);
+      if (seededBucketed > 0) {
+        saved = seededBucketed;
+        stats.bootstrap_seeded = seededBucketed;
+        stats.bootstrap_source = "deals_bucketed";
+      }
+    }
+
+    if (saved === 0) {
+      const seededTracked = await bootstrapFromTracked(minDiscount, syncId, now, deadlineAt);
+      if (seededTracked > 0) {
+        saved = seededTracked;
+        stats.bootstrap_seeded = seededTracked;
+        stats.bootstrap_source = "tracked_asins_getitems";
       }
     }
 
