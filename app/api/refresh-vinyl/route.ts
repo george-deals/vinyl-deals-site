@@ -15,6 +15,7 @@ const PAAPI_429_BASE_BACKOFF_MS = 6000;
 const PAAPI_429_MAX_BACKOFF_MS = 60000;
 const PAAPI_TRANSIENT_BASE_BACKOFF_MS = 1000;
 const PAAPI_TRANSIENT_MAX_BACKOFF_MS = 15000;
+const REQUEST_BUDGET_MS = 55000;
 
 const CORE_KEYWORDS = [
   "vinyl",
@@ -126,12 +127,13 @@ function pickBuyBoxListingOnly(item: any) {
   if (!listings.length) return null;
 
   const buyBox = listings.find((l) => l?.IsBuyBoxWinner);
-  if (!buyBox) return null;
+  const candidate = buyBox ?? listings.find((l) => toCents(l?.Price?.Amount));
+  if (!candidate) return null;
 
-  const priceCents = toCents(buyBox?.Price?.Amount);
+  const priceCents = toCents(candidate?.Price?.Amount);
   if (!priceCents) return null;
 
-  return buyBox;
+  return candidate;
 }
 
 async function paapiGetItems(asins: string[]) {
@@ -537,10 +539,19 @@ async function refreshVinylViaGetItems(req: Request, keywords: string[]) {
   const seen = new Set<string>();
   const keep: any[] = [];
   const errors: any[] = [];
+  const deadlineAt = Date.now() + REQUEST_BUDGET_MS;
 
   try {
     for (const kw of keywords) {
+      if (Date.now() >= deadlineAt) {
+        errors.push({ warning: "time_budget_reached", stage: "keyword_loop" });
+        break;
+      }
       for (let page = 1; page <= maxPages; page++) {
+        if (Date.now() >= deadlineAt) {
+          errors.push({ warning: "time_budget_reached", stage: "page_loop", keyword: kw, page });
+          break;
+        }
         let items: any[] = [];
         try {
           items = await withRetry(() =>
@@ -569,6 +580,7 @@ async function refreshVinylViaGetItems(req: Request, keywords: string[]) {
         }
 
         for (const chunk of chunks) {
+          if (Date.now() >= deadlineAt) break;
           let got: any[] = [];
           try {
             got = await withRetry(() => paapiGetItems(chunk));

@@ -223,12 +223,13 @@ function pickBuyBoxListingOnly(item: any) {
   if (!listings.length) return null;
 
   const buyBox = listings.find((l) => l?.IsBuyBoxWinner);
-  if (!buyBox) return null;
+  const candidate = buyBox ?? listings.find((l) => toCents(l?.Price?.Amount));
+  if (!candidate) return null;
 
-  const priceCents = toCents(buyBox?.Price?.Amount);
+  const priceCents = toCents(candidate?.Price?.Amount);
   if (!priceCents) return null;
 
-  return buyBox;
+  return candidate;
 }
 
 async function upsertChunked(rows: DealRow[]) {
