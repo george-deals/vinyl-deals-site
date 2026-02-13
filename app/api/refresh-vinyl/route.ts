@@ -15,7 +15,8 @@ const PAAPI_429_BASE_BACKOFF_MS = 6000;
 const PAAPI_429_MAX_BACKOFF_MS = 60000;
 const PAAPI_TRANSIENT_BASE_BACKOFF_MS = 1000;
 const PAAPI_TRANSIENT_MAX_BACKOFF_MS = 15000;
-const REQUEST_BUDGET_MS = 55000;
+const REQUEST_BUDGET_MS = 35000;
+const BOOTSTRAP_BUDGET_MS = 20000;
 
 const CORE_KEYWORDS = [
   "vinyl",
@@ -350,7 +351,7 @@ async function bootstrapFromTracked(minDiscount: number, syncId: string, nowIso:
     .eq("media_type", "vinyl")
     .eq("is_active", true)
     .order("last_seen_at", { ascending: false })
-    .limit(600);
+    .limit(120);
 
   if (error) throw new Error(error.message);
 
@@ -364,7 +365,7 @@ async function bootstrapFromTracked(minDiscount: number, syncId: string, nowIso:
 
     let items: any[] = [];
     try {
-      items = await withRetry(() => paapiGetItems(chunk));
+      items = await paapiGetItems(chunk);
     } catch {
       continue;
     }
@@ -790,7 +791,8 @@ async function refreshVinylViaGetItems(req: Request, keywords: string[]) {
     }
 
     if (saved === 0) {
-      const seededTracked = await bootstrapFromTracked(minDiscount, syncId, now, deadlineAt);
+      const bootstrapDeadlineAt = Date.now() + BOOTSTRAP_BUDGET_MS;
+      const seededTracked = await bootstrapFromTracked(minDiscount, syncId, now, bootstrapDeadlineAt);
       if (seededTracked > 0) {
         saved = seededTracked;
         stats.bootstrap_seeded = seededTracked;
