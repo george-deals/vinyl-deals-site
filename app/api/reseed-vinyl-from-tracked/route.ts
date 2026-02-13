@@ -128,6 +128,7 @@ async function paapiGetItems(asins: string[]) {
     Resources: [
       "ItemInfo.Title",
       "ItemInfo.ByLineInfo",
+      "ItemInfo.ProductInfo",
       "Images.Primary.Large",
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
@@ -285,7 +286,9 @@ export async function GET(req: Request) {
       const savingsPct = Number(listing?.Price?.Savings?.Percentage);
       const savingsAmt = toCents(listing?.Price?.Savings?.Amount);
       let listCents =
-        toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount);
+        toCents(listing?.SavingBasis?.Amount) ??
+        toCents(listing?.ListPrice?.Amount) ??
+        toCents(item?.ItemInfo?.ProductInfo?.ListPrice?.Amount);
       if (!listCents && savingsAmt) listCents = priceCents + savingsAmt;
 
       let discountPct: number | null = null;

@@ -153,6 +153,7 @@ async function paapiGetItems(asins: string[]) {
     Resources: [
       "ItemInfo.Title",
       "ItemInfo.ByLineInfo",
+      "ItemInfo.ProductInfo",
       "Images.Primary.Large",
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
@@ -519,7 +520,11 @@ async function revalidateActiveDeals(opts: {
 
       let priceCents = listing ? toCents(listing?.Price?.Amount) : null;
       let listCents =
-        listing ? (toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount)) : null;
+        listing
+          ? (toCents(listing?.SavingBasis?.Amount) ??
+            toCents(listing?.ListPrice?.Amount) ??
+            toCents(item?.ItemInfo?.ProductInfo?.ListPrice?.Amount))
+          : toCents(item?.ItemInfo?.ProductInfo?.ListPrice?.Amount);
       const savingsAmt = listing ? toCents(listing?.Price?.Savings?.Amount) : null;
 
       if (priceCents == null) priceCents = existing.price_cents;
@@ -725,7 +730,9 @@ async function refreshVinylViaGetItems(req: Request, keywords: string[]) {
             const savingsPct = Number(listing?.Price?.Savings?.Percentage);
             const savingsAmt = toCents(listing?.Price?.Savings?.Amount);
             let listCents =
-              toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount);
+              toCents(listing?.SavingBasis?.Amount) ??
+              toCents(listing?.ListPrice?.Amount) ??
+              toCents(item?.ItemInfo?.ProductInfo?.ListPrice?.Amount);
             if (!listCents && savingsAmt) listCents = priceCents + savingsAmt;
 
             let discountPct: number | null = null;
@@ -906,6 +913,14 @@ export async function GET(req: Request) {
     } catch (e: any) {
       revalidateStats = { ok: false, error: e?.message ?? String(e) };
     }
+
+    return Response.json({
+      ok: true,
+      media_type: "vinyl",
+      feed_key: "discount-15",
+      revalidate_only: true,
+      revalidate_active: revalidateStats,
+    });
   }
 
   const refreshResponse = await refreshVinylViaGetItems(req, keywords);
