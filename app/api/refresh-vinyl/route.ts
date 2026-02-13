@@ -301,6 +301,47 @@ async function upsertChunked(rows: any[]) {
   return saved;
 }
 
+async function bootstrapFromBucketed(minDiscount: number, syncId: string, nowIso: string) {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("deals_bucketed")
+    .select(
+      "asin,title,image_url,amazon_url,price_cents,list_price_cents,currency,discount_pct,category,sales_rank,updated_at,last_seen_at"
+    )
+    .eq("media_type", "vinyl")
+    .gte("discount_pct", minDiscount)
+    .order("updated_at", { ascending: false })
+    .limit(1000);
+
+  if (error) throw new Error(error.message);
+
+  const rows = (data ?? [])
+    .filter((r: any) => r?.asin && r?.title && r?.amazon_url)
+    .map((r: any) => ({
+      asin: r.asin,
+      title: r.title,
+      artist: null,
+      image_url: r.image_url ?? null,
+      amazon_url: r.amazon_url,
+      price_cents: r.price_cents ?? null,
+      list_price_cents: r.list_price_cents ?? null,
+      currency: r.currency ?? "USD",
+      discount_pct: r.discount_pct ?? null,
+      category: r.category ?? "media",
+      media_type: "vinyl",
+      feed_key: "discount-15",
+      sales_rank: r.sales_rank ?? null,
+      genre: null,
+      browse_node_id: null,
+      updated_at: nowIso,
+      last_seen_at: nowIso,
+      sync_id: syncId,
+    }));
+
+  if (!rows.length) return 0;
+  return upsertChunked(rows);
+}
+
 async function updateDealRows(rows: any[], feedKey: string) {
   if (!rows.length) return { updated: 0, errors: [] as any[] };
   const supabase = getSupabaseAdmin();
@@ -658,7 +699,15 @@ async function refreshVinylViaGetItems(req: Request, keywords: string[]) {
     }
 
     keep.sort((a, b) => (a.sales_rank ?? 1e12) - (b.sales_rank ?? 1e12));
-    const saved = await upsertChunked(keep);
+    let saved = await upsertChunked(keep);
+
+    if (saved === 0) {
+      const seeded = await bootstrapFromBucketed(minDiscount, syncId, now);
+      if (seeded > 0) {
+        saved = seeded;
+        stats.bootstrap_seeded = seeded;
+      }
+    }
 
     if (runId) {
       try {
