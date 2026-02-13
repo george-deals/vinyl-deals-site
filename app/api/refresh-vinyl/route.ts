@@ -423,6 +423,87 @@ async function bootstrapFromTracked(minDiscount: number, syncId: string, nowIso:
   return upsertChunked(keep);
 }
 
+
+async function bootstrapFromHistory(minDiscount: number, syncId: string, nowIso: string) {
+  const supabase = getSupabaseAdmin();
+  const cutoffIso = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data: hist, error: histErr } = await supabase
+    .from("asin_price_history")
+    .select("asin,checked_at,price_cents,list_price_cents,currency")
+    .gte("checked_at", cutoffIso)
+    .not("price_cents", "is", null)
+    .not("list_price_cents", "is", null)
+    .order("checked_at", { ascending: false })
+    .limit(12000);
+
+  if (histErr) throw new Error(histErr.message);
+
+  const latestByAsin = new Map<string, any>();
+  for (const row of hist ?? []) {
+    const asin = row?.asin;
+    if (!asin || latestByAsin.has(asin)) continue;
+    latestByAsin.set(asin, row);
+  }
+
+  const qualifying = [] as Array<{ asin: string; price_cents: number; list_price_cents: number; currency: string | null }>;
+  for (const [asin, row] of latestByAsin.entries()) {
+    const price = Number(row?.price_cents);
+    const list = Number(row?.list_price_cents);
+    if (!Number.isFinite(price) || !Number.isFinite(list) || list <= 0 || price <= 0 || list <= price) continue;
+    const pct = Math.round(((list - price) / list) * 1000) / 10;
+    if (pct < minDiscount) continue;
+    qualifying.push({ asin, price_cents: Math.round(price), list_price_cents: Math.round(list), currency: row?.currency ?? "USD" });
+  }
+
+  if (!qualifying.length) return 0;
+
+  const asins = qualifying.map((q) => q.asin);
+  const metaByAsin = new Map<string, any>();
+  const CHUNK = 200;
+  for (let i = 0; i < asins.length; i += CHUNK) {
+    const chunk = asins.slice(i, i + CHUNK);
+    const { data: tracked } = await supabase
+      .from("tracked_asins")
+      .select("asin,title,artist,image_url,amazon_url")
+      .eq("media_type", "vinyl")
+      .eq("is_active", true)
+      .in("asin", chunk);
+
+    for (const t of tracked ?? []) {
+      if (t?.asin) metaByAsin.set(t.asin, t);
+    }
+  }
+
+  const rows = qualifying.map((q) => {
+    const meta = metaByAsin.get(q.asin);
+    const pct = Math.round(((q.list_price_cents - q.price_cents) / q.list_price_cents) * 1000) / 10;
+    return {
+      asin: q.asin,
+      title: meta?.title ?? q.asin,
+      artist: meta?.artist ?? null,
+      image_url: meta?.image_url ?? null,
+      amazon_url: meta?.amazon_url ?? ("https://www.amazon.com/dp/" + q.asin + "?tag=" + process.env.AMAZON_PARTNER_TAG),
+      price_cents: q.price_cents,
+      list_price_cents: q.list_price_cents,
+      currency: q.currency,
+      discount_pct: pct,
+      category: "media",
+      media_type: "vinyl",
+      feed_key: "discount-15",
+      sales_rank: null,
+      genre: null,
+      browse_node_id: null,
+      updated_at: nowIso,
+      last_seen_at: nowIso,
+      sync_id: syncId,
+    };
+  });
+
+  if (!rows.length) return 0;
+  return upsertChunked(rows);
+}
+
 async function updateDealRows(rows: any[], feedKey: string) {
   if (!rows.length) return { updated: 0, errors: [] as any[] };
   const supabase = getSupabaseAdmin();
@@ -804,6 +885,15 @@ async function refreshVinylViaGetItems(req: Request, keywords: string[]) {
         saved = seededTracked;
         stats.bootstrap_seeded = seededTracked;
         stats.bootstrap_source = "tracked_asins_getitems";
+      }
+    }
+
+    if (saved === 0) {
+      const seededHistory = await bootstrapFromHistory(minDiscount, syncId, now);
+      if (seededHistory > 0) {
+        saved = seededHistory;
+        stats.bootstrap_seeded = seededHistory;
+        stats.bootstrap_source = "asin_price_history";
       }
     }
 
