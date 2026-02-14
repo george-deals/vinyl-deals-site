@@ -503,6 +503,7 @@ async function bootstrapFromHistory(minDiscount: number, syncId: string, nowIso:
   const CHUNK = 200;
   for (let i = 0; i < asins.length; i += CHUNK) {
     const chunk = asins.slice(i, i + CHUNK);
+
     const { data: tracked } = await supabase
       .from("tracked_asins")
       .select("asin,title,artist,image_url,amazon_url")
@@ -511,36 +512,65 @@ async function bootstrapFromHistory(minDiscount: number, syncId: string, nowIso:
       .in("asin", chunk);
 
     for (const t of tracked ?? []) {
-      if (t?.asin) metaByAsin.set(t.asin, t);
+      if (t?.asin) metaByAsin.set(t.asin, { ...(metaByAsin.get(t.asin) ?? {}), ...t });
+    }
+
+    const { data: bucketed } = await supabase
+      .from("deals_bucketed")
+      .select("asin,title,image_url,amazon_url")
+      .eq("media_type", "vinyl")
+      .in("asin", chunk);
+
+    for (const b of bucketed ?? []) {
+      if (!b?.asin) continue;
+      const prev = metaByAsin.get(b.asin) ?? {};
+      metaByAsin.set(b.asin, {
+        ...prev,
+        title: prev.title ?? b.title ?? null,
+        image_url: prev.image_url ?? b.image_url ?? null,
+        amazon_url: prev.amazon_url ?? b.amazon_url ?? null,
+      });
     }
   }
 
-  const rows = qualifying.map((q) => {
-    const meta = metaByAsin.get(q.asin);
-    return {
-      asin: q.asin,
-      title: meta?.title ?? q.asin,
-      artist: meta?.artist ?? null,
-      image_url: meta?.image_url ?? null,
-      amazon_url: meta?.amazon_url ?? ("https://www.amazon.com/dp/" + q.asin + "?tag=" + process.env.AMAZON_PARTNER_TAG),
-      price_cents: q.price_cents,
-      list_price_cents: q.list_price_cents,
-      currency: q.currency,
-      discount_pct: q.discount_pct,
-      category: "media",
-      media_type: "vinyl",
-      feed_key: "discount-15",
-      sales_rank: null,
-      genre: null,
-      browse_node_id: null,
-      updated_at: nowIso,
-      last_seen_at: nowIso,
-      sync_id: syncId,
-    };
-  });
+  const rows = qualifying
+    .map((q) => {
+      const meta = metaByAsin.get(q.asin) ?? {};
+      const title = typeof meta.title === "string" ? meta.title.trim() : "";
+      const imageUrl = typeof meta.image_url === "string" ? meta.image_url.trim() : "";
+      const amazonUrl =
+        typeof meta.amazon_url === "string" && meta.amazon_url.trim()
+          ? meta.amazon_url.trim()
+          : "https://www.amazon.com/dp/" + q.asin + "?tag=" + process.env.AMAZON_PARTNER_TAG;
+
+      // Keep fallback-seeded rows visually clean: no raw-ASIN titles or missing artwork.
+      if (!title || title === q.asin || !imageUrl) return null;
+
+      return {
+        asin: q.asin,
+        title,
+        artist: meta?.artist ?? null,
+        image_url: imageUrl,
+        amazon_url: amazonUrl,
+        price_cents: q.price_cents,
+        list_price_cents: q.list_price_cents,
+        currency: q.currency,
+        discount_pct: q.discount_pct,
+        category: "media",
+        media_type: "vinyl",
+        feed_key: "discount-15",
+        sales_rank: null,
+        genre: null,
+        browse_node_id: null,
+        updated_at: nowIso,
+        last_seen_at: nowIso,
+        sync_id: syncId,
+      };
+    })
+    .filter(Boolean);
 
   if (!rows.length) return 0;
-  return upsertChunked(rows);
+  return upsertChunked(rows as any[]);
 }
 
 async function updateDealRows(rows: any[], feedKey: string) {
