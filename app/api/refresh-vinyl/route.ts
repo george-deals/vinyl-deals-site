@@ -426,34 +426,74 @@ async function bootstrapFromTracked(minDiscount: number, syncId: string, nowIso:
 
 async function bootstrapFromHistory(minDiscount: number, syncId: string, nowIso: string) {
   const supabase = getSupabaseAdmin();
-  const cutoffIso = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+  const cutoffIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
   const { data: hist, error: histErr } = await supabase
     .from("asin_price_history")
     .select("asin,checked_at,price_cents,list_price_cents,currency")
     .gte("checked_at", cutoffIso)
     .not("price_cents", "is", null)
-    .not("list_price_cents", "is", null)
     .order("checked_at", { ascending: false })
-    .limit(12000);
+    .limit(50000);
 
   if (histErr) throw new Error(histErr.message);
 
-  const latestByAsin = new Map<string, any>();
-  for (const row of hist ?? []) {
-    const asin = row?.asin;
-    if (!asin || latestByAsin.has(asin)) continue;
-    latestByAsin.set(asin, row);
-  }
+  type HRow = {
+    asin: string;
+    checked_at: string;
+    price_cents: number | null;
+    list_price_cents: number | null;
+    currency: string | null;
+  };
 
-  const qualifying = [] as Array<{ asin: string; price_cents: number; list_price_cents: number; currency: string | null }>;
-  for (const [asin, row] of latestByAsin.entries()) {
+  const latestByAsin = new Map<string, HRow>();
+  const maxPriceByAsin = new Map<string, number>();
+  const maxListByAsin = new Map<string, number>();
+
+  for (const row of (hist ?? []) as HRow[]) {
+    const asin = row?.asin;
     const price = Number(row?.price_cents);
     const list = Number(row?.list_price_cents);
-    if (!Number.isFinite(price) || !Number.isFinite(list) || list <= 0 || price <= 0 || list <= price) continue;
-    const pct = Math.round(((list - price) / list) * 1000) / 10;
-    if (pct < minDiscount) continue;
-    qualifying.push({ asin, price_cents: Math.round(price), list_price_cents: Math.round(list), currency: row?.currency ?? "USD" });
+    if (!asin || !Number.isFinite(price) || price <= 0) continue;
+
+    if (!latestByAsin.has(asin)) latestByAsin.set(asin, row);
+
+    const p = Math.round(price);
+    const prevMaxPrice = maxPriceByAsin.get(asin) ?? 0;
+    if (p > prevMaxPrice) maxPriceByAsin.set(asin, p);
+
+    if (Number.isFinite(list) && list > 0) {
+      const l = Math.round(list);
+      const prevMaxList = maxListByAsin.get(asin) ?? 0;
+      if (l > prevMaxList) maxListByAsin.set(asin, l);
+    }
+  }
+
+  const qualifying: Array<{
+    asin: string;
+    price_cents: number;
+    list_price_cents: number;
+    currency: string | null;
+    discount_pct: number;
+  }> = [];
+
+  for (const [asin, latest] of latestByAsin.entries()) {
+    const latestPrice = Math.round(Number(latest.price_cents));
+    const listFromRows = maxListByAsin.get(asin) ?? 0;
+    const listFromHigh = maxPriceByAsin.get(asin) ?? 0;
+    const baseline = Math.max(listFromRows, listFromHigh);
+    if (!baseline || baseline <= latestPrice) continue;
+
+    const discountPct = Math.round(((baseline - latestPrice) / baseline) * 1000) / 10;
+    if (discountPct < minDiscount) continue;
+
+    qualifying.push({
+      asin,
+      price_cents: latestPrice,
+      list_price_cents: baseline,
+      currency: latest.currency ?? "USD",
+      discount_pct: discountPct,
+    });
   }
 
   if (!qualifying.length) return 0;
@@ -477,7 +517,6 @@ async function bootstrapFromHistory(minDiscount: number, syncId: string, nowIso:
 
   const rows = qualifying.map((q) => {
     const meta = metaByAsin.get(q.asin);
-    const pct = Math.round(((q.list_price_cents - q.price_cents) / q.list_price_cents) * 1000) / 10;
     return {
       asin: q.asin,
       title: meta?.title ?? q.asin,
@@ -487,7 +526,7 @@ async function bootstrapFromHistory(minDiscount: number, syncId: string, nowIso:
       price_cents: q.price_cents,
       list_price_cents: q.list_price_cents,
       currency: q.currency,
-      discount_pct: pct,
+      discount_pct: q.discount_pct,
       category: "media",
       media_type: "vinyl",
       feed_key: "discount-15",
