@@ -2,14 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "Physical Media Deals",
+  title: "Amazon Blu-ray Deals, 4K UHD Deals & DVD Deals",
   description:
-    "Daily Amazon deal tracking for Blu-ray, 4K UHD, DVD, Vinyl, and CD. New items only, 15%+ off minimum, with on-page filtering.",
+    "Find live Amazon Blu-ray deals, 4K UHD deals, DVD deals, vinyl deals, and CD deals. New items only, 15%+ off, refreshed hourly.",
   alternates: { canonical: "/" },
   openGraph: {
-    title: "MediaDealsHub — Physical Media Deals",
+    title: "Amazon Blu-ray, 4K UHD, DVD, Vinyl & CD Deals",
     description:
-      "Track Blu-ray, 4K UHD, DVD, Vinyl, and CD deal prices from Amazon in one clean dashboard.",
+      "Live Amazon deal tracking for Blu-ray, 4K UHD, DVD, vinyl, and CD with hourly price refreshes.",
     url: "/",
     type: "website",
   },
@@ -29,13 +29,13 @@ export default function Home() {
           </div>
 
           <h1 className="mt-5 text-4xl font-bold tracking-tight text-slate-900 sm:text-5xl">
-            Daily Physical Media Deals
+            Amazon Physical Media Deals
           </h1>
 
           <p className="mt-3 max-w-3xl text-lg leading-relaxed text-slate-700">
-            Simple deal pages for <strong>Blu-ray</strong>, <strong>4K UHD</strong>, <strong>DVD</strong>,
-            <strong> Vinyl</strong>, and <strong>CD</strong>. Movie formats are prioritized first based on
-            search demand, while keeping the full physical media catalog.
+            Find live <strong>Blu-ray deals</strong>, <strong>4K UHD deals</strong>, and <strong>DVD deals</strong>,
+            plus <strong>vinyl</strong> and <strong>CD</strong> discounts. We track new listings with
+            at least 15% off and refresh pricing hourly.
           </p>
 
           <div className="mt-6 flex flex-wrap gap-3">
