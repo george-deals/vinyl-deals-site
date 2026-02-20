@@ -59,6 +59,14 @@ function parseFilter(v: unknown): DiscountFilter {
   return "all";
 }
 
+function isRenderableDeal(d: Deal) {
+  const title = String(d?.title ?? "").trim();
+  const imageUrl = String(d?.image_url ?? "").trim();
+  if (!title || !imageUrl) return false;
+  if (/^B[0-9A-Z]{9}$/i.test(title)) return false;
+  return true;
+}
+
 function filterLabel(f: DiscountFilter) {
   switch (f) {
     case "15-20":
@@ -137,6 +145,7 @@ export default async function VinylTopDealsPage({
     .limit(1000);
 
   const deals: Deal[] = (data as any) || [];
+  const visibleDeals = deals.filter(isRenderableDeal);
   const errorMsg = error ? error.message : null;
 
   const chip = (label: string, href: string, active: boolean) => (
@@ -180,7 +189,7 @@ export default async function VinylTopDealsPage({
           <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
             Error loading deals: {errorMsg}
           </div>
-        ) : deals.length === 0 ? (
+        ) : visibleDeals.length === 0 ? (
           <div className="mt-6 rounded-lg border bg-white p-6">
             <p className="text-slate-700">
               No results for <strong>{filterLabel(filter)}</strong>. Try another filter.
@@ -189,11 +198,11 @@ export default async function VinylTopDealsPage({
         ) : (
           <>
             <div className="mt-6 text-sm text-slate-600">
-              Showing <strong>{deals.length}</strong> results for <strong>{filterLabel(filter)}</strong>
+              Showing <strong>{visibleDeals.length}</strong> results for <strong>{filterLabel(filter)}</strong>
             </div>
 
             <ul className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-5">
-              {deals.map((d) => {
+              {visibleDeals.map((d) => {
                 const price = money(d.price_cents, d.currency);
                 const list = money(d.list_price_cents, d.currency);
                 const hasDiscount = typeof d.discount_pct === "number";

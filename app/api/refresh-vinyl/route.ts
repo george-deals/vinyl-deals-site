@@ -285,14 +285,27 @@ function getPrimaryBrowseNodeId(item: any): number | null {
   return null;
 }
 
+function isLowQualityVinylRow(row: any) {
+  const asin = String(row?.asin ?? "").trim();
+  const title = String(row?.title ?? "").trim();
+  const imageUrl = String(row?.image_url ?? "").trim();
+
+  if (!asin || !title || !imageUrl) return true;
+  if (/^B[0-9A-Z]{9}$/i.test(title)) return true;
+  return false;
+}
+
 async function upsertChunked(rows: any[]) {
   if (!rows.length) return 0;
+  const filteredRows = rows.filter((r) => !isLowQualityVinylRow(r));
+  if (!filteredRows.length) return 0;
+
   const supabase = getSupabaseAdmin();
   const CHUNK = 500;
   let saved = 0;
 
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    const chunk = rows.slice(i, i + CHUNK);
+  for (let i = 0; i < filteredRows.length; i += CHUNK) {
+    const chunk = filteredRows.slice(i, i + CHUNK);
     const { error } = await supabase.from("deals").upsert(chunk, {
       onConflict: "media_type,feed_key,asin",
     });
@@ -498,7 +511,34 @@ async function bootstrapFromHistory(minDiscount: number, syncId: string, nowIso:
 
   if (!qualifying.length) return 0;
 
-  const asins = qualifying.map((q) => q.asin);
+  const pricedCandidates = qualifying.slice(0, 120);
+  const currentPriceByAsin = new Map<string, { price_cents: number; currency: string | null }>();
+  for (let i = 0; i < pricedCandidates.length; i += PAAPI_ITEM_COUNT) {
+    const chunk = pricedCandidates.slice(i, i + PAAPI_ITEM_COUNT).map((q) => q.asin);
+
+    let items: any[] = [];
+    try {
+      items = await paapiGetItems(chunk);
+    } catch {
+      continue;
+    }
+
+    for (const item of items) {
+      const asin = item?.ASIN;
+      if (!asin) continue;
+      const listing = pickBuyBoxListingOnly(item);
+      const livePrice = toCents(listing?.Price?.Amount);
+      if (!livePrice) continue;
+      currentPriceByAsin.set(asin, {
+        price_cents: livePrice,
+        currency: listing?.Price?.Currency ?? null,
+      });
+    }
+  }
+
+  if (!currentPriceByAsin.size) return 0;
+
+  const asins = Array.from(currentPriceByAsin.keys());
   const metaByAsin = new Map<string, any>();
   const CHUNK = 200;
   for (let i = 0; i < asins.length; i += CHUNK) {
@@ -535,6 +575,16 @@ async function bootstrapFromHistory(minDiscount: number, syncId: string, nowIso:
 
   const rows = qualifying
     .map((q) => {
+      const live = currentPriceByAsin.get(q.asin);
+      if (!live) return null;
+
+      const baseline = q.list_price_cents;
+      const livePrice = live.price_cents;
+      if (!baseline || baseline <= livePrice) return null;
+
+      const liveDiscount = Math.round(((baseline - livePrice) / baseline) * 1000) / 10;
+      if (liveDiscount < minDiscount) return null;
+
       const meta = metaByAsin.get(q.asin) ?? {};
       const title = typeof meta.title === "string" ? meta.title.trim() : "";
       const imageUrl = typeof meta.image_url === "string" ? meta.image_url.trim() : "";
@@ -552,10 +602,10 @@ async function bootstrapFromHistory(minDiscount: number, syncId: string, nowIso:
         artist: meta?.artist ?? null,
         image_url: imageUrl,
         amazon_url: amazonUrl,
-        price_cents: q.price_cents,
-        list_price_cents: q.list_price_cents,
-        currency: q.currency,
-        discount_pct: q.discount_pct,
+        price_cents: livePrice,
+        list_price_cents: baseline,
+        currency: live.currency ?? q.currency,
+        discount_pct: liveDiscount,
         category: "media",
         media_type: "vinyl",
         feed_key: "discount-15",
@@ -599,6 +649,27 @@ async function updateDealRows(rows: any[], feedKey: string) {
   }
 
   return { updated, errors };
+}
+
+async function invalidateLowQualityDeals(feedKey: string, minDiscount: number) {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("deals")
+    .select("asin,title,image_url")
+    .eq("media_type", "vinyl")
+    .eq("feed_key", feedKey)
+    .gte("discount_pct", minDiscount)
+    .limit(2000);
+
+  if (error) throw new Error(error.message);
+
+  const nowIso = new Date().toISOString();
+  const badRows = (data ?? [])
+    .filter((r: any) => isLowQualityVinylRow(r))
+    .map((r: any) => ({ asin: r.asin, discount_pct: 0, updated_at: nowIso }));
+
+  if (!badRows.length) return { updated: 0, errors: [] as any[] };
+  return updateDealRows(badRows, feedKey);
 }
 
 async function revalidateActiveDeals(opts: {
@@ -964,6 +1035,11 @@ async function refreshVinylViaGetItems(req: Request, keywords: string[]) {
         stats.bootstrap_seeded = seededHistory;
         stats.bootstrap_source = "asin_price_history";
       }
+    }
+
+    const invalidation = await invalidateLowQualityDeals("discount-15", minDiscount);
+    if (invalidation.updated > 0) {
+      stats.invalidated_low_quality = invalidation.updated;
     }
 
     if (runId) {
