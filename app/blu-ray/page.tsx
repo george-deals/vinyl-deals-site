@@ -6,7 +6,6 @@ export const revalidate = 60;
 
 const FEED_KEY = "discount-15";
 const MIN_DISCOUNT = 15;
-const STALE_DAYS = 3;
 
 type Deal = {
   asin: string;
@@ -84,20 +83,15 @@ export async function generateMetadata({
   const sp = await searchParams;
   const filter = parseFilter(sp.discount);
 
-  const base = "Blu-ray Deals";
+  const base = "Blu-ray Deals & Blue Ray Movies on Sale";
   const title =
-    filter === "all" ? `${base} (15%+ Off)` : `${base} – ${filterLabel(filter)}`;
+    filter === "all" ? `${base} (Amazon US)` : `${filterLabel(filter)} — ${base}`;
   const description =
     filter === "all"
-      ? "Browse Blu-ray deals with 15%+ discounts, sorted by sales rank."
-      : `Browse Blu-ray deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
+      ? "Live Amazon blu ray deals and blue ray movies on sale. We track 15%+ Blu-ray discounts and rank by popularity."
+      : `Live Amazon blu ray deals filtered to ${filterLabel(filter)}. Updated regularly and sorted by sales rank.`;
 
-  const canonical =
-    filter === "all"
-      ? "https://www.mediadealshub.com/blu-ray"
-      : `https://www.mediadealshub.com/blu-ray?discount=${encodeURIComponent(
-          String(sp.discount ?? "")
-        )}`;
+  const canonical = filter === "all" ? "/blu-ray" : `/blu-ray?discount=${filter}`;
 
   return {
     title,
@@ -174,7 +168,10 @@ export default async function BluRayDealsPage({
       <div className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold tracking-tight">Blu-ray Deals</h1>
         <p className="text-slate-700">
-          15%+ off (sorted by sales rank). Filter by discount range.
+          Live blu ray deals and blue ray movies on sale from Amazon. 15%+ off and sorted by sales rank.
+        </p>
+        <p className="text-sm text-slate-600">
+          Looking for broader categories? Visit <Link href="/movie-deals" className="underline hover:text-slate-900">Movie Deals</Link> or <Link href="/blue-ray-movies-on-sale" className="underline hover:text-slate-900">Blue Ray Movies on Sale</Link>.
         </p>
         <p className="text-sm text-slate-600">
           Last Updated:{" "}

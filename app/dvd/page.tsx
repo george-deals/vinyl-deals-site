@@ -6,7 +6,6 @@ export const revalidate = 60;
 
 const FEED_KEY = "discount-15";
 const MIN_DISCOUNT = 15;
-const STALE_DAYS = 3;
 
 type Deal = {
   asin: string;
@@ -84,18 +83,15 @@ export async function generateMetadata({
   const sp = await searchParams;
   const filter = parseFilter(sp.discount);
 
-  const base = "DVD Deals";
+  const base = "DVD Movie Deals";
   const title =
-    filter === "all" ? `${base} (15%+ Off)` : `${base} – ${filterLabel(filter)}`;
+    filter === "all" ? `${base} (Amazon US)` : `${filterLabel(filter)} — ${base}`;
   const description =
     filter === "all"
-      ? "Browse DVD deals with 15%+ discounts, sorted by sales rank."
-      : `Browse DVD deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
+      ? "Live DVD movie deals with 15%+ discounts from Amazon, sorted by sales rank."
+      : `Live DVD movie deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
 
-  const canonical =
-    filter === "all"
-      ? "https://www.mediadealshub.com/dvd"
-      : `https://www.mediadealshub.com/dvd?discount=${encodeURIComponent(String(sp.discount ?? ""))}`;
+  const canonical = filter === "all" ? "/dvd" : `/dvd?discount=${filter}`;
 
   return {
     title,
@@ -173,7 +169,10 @@ export default async function DvdDealsPage({
       <div className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold tracking-tight">DVD Deals</h1>
         <p className="text-slate-700">
-          15%+ off (sorted by sales rank). Filter by discount range.
+          15%+ off DVD movie deals (sorted by sales rank). Filter by discount range.
+        </p>
+        <p className="text-sm text-slate-600">
+          For Blu-ray and 4K pages, visit <Link href="/movie-deals" className="underline hover:text-slate-900">Movie Deals</Link>.
         </p>
         <p className="text-sm text-slate-600">
           Last Updated: <strong>{lastUpdatedIso ? formatPT(lastUpdatedIso) : "—"}</strong>

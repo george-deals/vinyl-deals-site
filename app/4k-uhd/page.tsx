@@ -6,7 +6,6 @@ export const revalidate = 60;
 
 const FEED_KEY = "discount-15";
 const MIN_DISCOUNT = 15;
-const STALE_DAYS = 3;
 
 type Deal = {
   asin: string;
@@ -84,20 +83,15 @@ export async function generateMetadata({
   const sp = await searchParams;
   const filter = parseFilter(sp.discount);
 
-  const base = "4K UHD Deals";
+  const base = "4K UHD Movie Deals";
   const title =
-    filter === "all" ? `${base} (15%+ Off)` : `${base} – ${filterLabel(filter)}`;
+    filter === "all" ? `${base} (Amazon US)` : `${filterLabel(filter)} — ${base}`;
   const description =
     filter === "all"
-      ? "Browse 4K UHD deals with 15%+ discounts, sorted by sales rank."
-      : `Browse 4K UHD deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
+      ? "Live 4K UHD movie deals with 15%+ discounts from Amazon, sorted by sales rank."
+      : `Live 4K UHD movie deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
 
-  const canonical =
-    filter === "all"
-      ? "https://www.mediadealshub.com/4k-uhd"
-      : `https://www.mediadealshub.com/4k-uhd?discount=${encodeURIComponent(
-          String(sp.discount ?? "")
-        )}`;
+  const canonical = filter === "all" ? "/4k-uhd" : `/4k-uhd?discount=${filter}`;
 
   return {
     title,
@@ -174,7 +168,10 @@ export default async function FourKUhdDealsPage({
       <div className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold tracking-tight">4K UHD Deals</h1>
         <p className="text-slate-700">
-          15%+ off (sorted by sales rank). Filter by discount range.
+          15%+ off 4K UHD movie deals (sorted by sales rank). Filter by discount range.
+        </p>
+        <p className="text-sm text-slate-600">
+          For all movie formats, visit <Link href="/movie-deals" className="underline hover:text-slate-900">Movie Deals</Link>.
         </p>
         <p className="text-sm text-slate-600">
           Last Updated:{" "}

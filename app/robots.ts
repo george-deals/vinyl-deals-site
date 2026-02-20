@@ -1,6 +1,8 @@
 import { MetadataRoute } from "next";
 
 export default function robots(): MetadataRoute.Robots {
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://www.mediadealshub.com";
+
   return {
     rules: [
       {
@@ -8,6 +10,6 @@ export default function robots(): MetadataRoute.Robots {
         allow: "/",
       },
     ],
-    sitemap: `${process.env.NEXT_PUBLIC_SITE_URL}/sitemap.xml`,
+    sitemap: `${siteUrl.replace(/\/$/, "")}/sitemap.xml`,
   };
 }

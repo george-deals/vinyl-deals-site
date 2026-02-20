@@ -74,22 +74,24 @@ export default function SiteHeader() {
 
           {/* Desktop nav */}
           <nav className="hidden sm:flex items-center gap-1 rounded-full bg-slate-100 p-1">
-            <PillLink href="/vinyl">Vinyl</PillLink>
-            <PillLink href="/4k-uhd">4K UHD</PillLink>
+            <PillLink href="/movie-deals">Movies</PillLink>
             <PillLink href="/blu-ray">Blu-ray</PillLink>
-            <PillLink href="/cd">CD</PillLink>
+            <PillLink href="/4k-uhd">4K UHD</PillLink>
             <PillLink href="/dvd">DVDs</PillLink>
+            <PillLink href="/vinyl">Vinyl</PillLink>
+            <PillLink href="/cd">CD</PillLink>
           </nav>
         </div>
 
-        {/* Mobile: 5 buttons in a single row (scrollable) */}
+        {/* Mobile nav (scrollable) */}
         <nav className="sm:hidden -mx-6 px-6 pb-3">
           <div className="flex gap-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-            <MobilePillLink href="/vinyl">Vinyl</MobilePillLink>
-            <MobilePillLink href="/4k-uhd">4K UHD</MobilePillLink>
+            <MobilePillLink href="/movie-deals">Movies</MobilePillLink>
             <MobilePillLink href="/blu-ray">Blu-ray</MobilePillLink>
-            <MobilePillLink href="/cd">CD</MobilePillLink>
+            <MobilePillLink href="/4k-uhd">4K UHD</MobilePillLink>
             <MobilePillLink href="/dvd">DVDs</MobilePillLink>
+            <MobilePillLink href="/vinyl">Vinyl</MobilePillLink>
+            <MobilePillLink href="/cd">CD</MobilePillLink>
           </div>
         </nav>
       </div>

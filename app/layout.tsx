@@ -14,7 +14,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "MediaDealsHub — Daily Amazon Deals on Physical Media",
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://www.mediadealshub.com"),
+  title: {
+    default: "MediaDealsHub — Daily Amazon Deals on Physical Media",
+    template: "%s | MediaDealsHub",
+  },
   description:
     "MediaDealsHub tracks daily Amazon deals on vinyl, CDs, Blu-ray, 4K UHD, and DVDs. New items only, 15%+ off, best sellers first.",
 };
