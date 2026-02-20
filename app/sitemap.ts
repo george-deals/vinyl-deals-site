@@ -11,20 +11,11 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
 
   const routes = [
     { path: "", priority: 1.0 },
-    { path: "/movie-deals", priority: 0.95 },
     { path: "/blu-ray", priority: 0.95 },
-    { path: "/blue-ray-movies-on-sale", priority: 0.9 },
     { path: "/4k-uhd", priority: 0.9 },
     { path: "/dvd", priority: 0.9 },
-    { path: "/vinyl", priority: 0.8 },
+    { path: "/vinyl", priority: 0.85 },
     { path: "/cd", priority: 0.8 },
-    { path: "/vinyl/30-percent-off", priority: 0.75 },
-    { path: "/vinyl/under-20", priority: 0.75 },
-    { path: "/4k-uhd/30-percent-off", priority: 0.75 },
-    { path: "/4k-uhd/under-15", priority: 0.75 },
-    { path: "/disclosure", priority: 0.2 },
-    { path: "/privacy", priority: 0.2 },
-    { path: "/terms", priority: 0.2 },
   ];
 
   return routes.map((route) => ({

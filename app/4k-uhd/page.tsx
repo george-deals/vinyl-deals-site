@@ -83,13 +83,13 @@ export async function generateMetadata({
   const sp = await searchParams;
   const filter = parseFilter(sp.discount);
 
-  const base = "4K UHD Movie Deals";
+  const base = "4K UHD Deals";
   const title =
     filter === "all" ? `${base} (Amazon US)` : `${filterLabel(filter)} — ${base}`;
   const description =
     filter === "all"
-      ? "Live 4K UHD movie deals with 15%+ discounts from Amazon, sorted by sales rank."
-      : `Live 4K UHD movie deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
+      ? "Live 4K UHD deals with 15%+ discounts from Amazon, sorted by sales rank."
+      : `Live 4K UHD deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
 
   const canonical = filter === "all" ? "/4k-uhd" : `/4k-uhd?discount=${filter}`;
 
@@ -168,10 +168,7 @@ export default async function FourKUhdDealsPage({
       <div className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold tracking-tight">4K UHD Deals</h1>
         <p className="text-slate-700">
-          15%+ off 4K UHD movie deals (sorted by sales rank). Filter by discount range.
-        </p>
-        <p className="text-sm text-slate-600">
-          For all movie formats, visit <Link href="/movie-deals" className="underline hover:text-slate-900">Movie Deals</Link>.
+          15%+ off 4K UHD deals (sorted by sales rank). Filter by discount range.
         </p>
         <p className="text-sm text-slate-600">
           Last Updated:{" "}

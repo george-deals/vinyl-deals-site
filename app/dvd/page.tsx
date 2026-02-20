@@ -83,13 +83,13 @@ export async function generateMetadata({
   const sp = await searchParams;
   const filter = parseFilter(sp.discount);
 
-  const base = "DVD Movie Deals";
+  const base = "DVD Deals";
   const title =
     filter === "all" ? `${base} (Amazon US)` : `${filterLabel(filter)} — ${base}`;
   const description =
     filter === "all"
-      ? "Live DVD movie deals with 15%+ discounts from Amazon, sorted by sales rank."
-      : `Live DVD movie deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
+      ? "Live DVD deals with 15%+ discounts from Amazon, sorted by sales rank."
+      : `Live DVD deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
 
   const canonical = filter === "all" ? "/dvd" : `/dvd?discount=${filter}`;
 
@@ -169,10 +169,7 @@ export default async function DvdDealsPage({
       <div className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold tracking-tight">DVD Deals</h1>
         <p className="text-slate-700">
-          15%+ off DVD movie deals (sorted by sales rank). Filter by discount range.
-        </p>
-        <p className="text-sm text-slate-600">
-          For Blu-ray and 4K pages, visit <Link href="/movie-deals" className="underline hover:text-slate-900">Movie Deals</Link>.
+          15%+ off DVD deals (sorted by sales rank). Filter by discount range.
         </p>
         <p className="text-sm text-slate-600">
           Last Updated: <strong>{lastUpdatedIso ? formatPT(lastUpdatedIso) : "—"}</strong>
