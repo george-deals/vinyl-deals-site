@@ -49,6 +49,22 @@ type DealRow = {
   sync_id: string;
 };
 
+type ActiveDealRow = {
+  asin: string;
+  title: string | null;
+  price_cents: number | null;
+  list_price_cents: number | null;
+  currency: string | null;
+};
+
+type CurrentPricing = {
+  priceCents: number | null;
+  listCents: number | null;
+  currency: string | null;
+  discountPct: number | null;
+  hadDiscountSignal: boolean;
+};
+
 function toCents(n: any): number | null {
   const x = Number(n);
   return Number.isFinite(x) && x > 0 ? Math.round(x * 100) : null;
@@ -98,6 +114,118 @@ function extractArtist(item: any): string | null {
   return null;
 }
 
+function normalizeText(v: any): string {
+  return typeof v === "string" ? v.trim().toLowerCase() : "";
+}
+
+function hasToken(text: string, pattern: RegExp): boolean {
+  return pattern.test(text);
+}
+
+function extractBinding(item: any): string {
+  return normalizeText(item?.ItemInfo?.Classifications?.Binding?.DisplayValue);
+}
+
+function titleLooks4k(title: string): boolean {
+  return hasToken(title, /\b(4k|uhd|ultra hd)\b/i);
+}
+
+function itemMatchesMediaType(
+  mediaType: MediaConfig["media_type"],
+  item: any,
+  fallbackTitle?: string | null
+): boolean {
+  const binding = extractBinding(item);
+  const title = normalizeText(item?.ItemInfo?.Title?.DisplayValue ?? fallbackTitle ?? "");
+
+  if (mediaType === "4k-uhd") {
+    return titleLooks4k(title) || hasToken(binding, /(4k|ultra hd|uhd)/i);
+  }
+
+  if (mediaType === "blu-ray") {
+    if (titleLooks4k(title) || hasToken(binding, /(4k|ultra hd|uhd)/i)) return false;
+    if (hasToken(binding, /(blu[- ]?ray|bluray|bd)/i)) return true;
+    return hasToken(title, /\bblu[- ]?ray\b|\bbluray\b/i);
+  }
+
+  if (mediaType === "dvd") {
+    if (titleLooks4k(title)) return false;
+    if (hasToken(binding, /(4k|ultra hd|uhd|blu[- ]?ray|bluray|bd)/i)) return false;
+    if (hasToken(title, /\bblu[- ]?ray\b|\bbluray\b/i)) return false;
+    if (hasToken(binding, /dvd/i)) return true;
+    return hasToken(title, /\bdvd\b/i);
+  }
+
+  if (mediaType === "vinyl") {
+    if (hasToken(binding, /vinyl/i)) return true;
+    if (hasToken(binding, /(audio\s*cd|\bcd\b)/i)) return false;
+    return hasToken(title, /\b(vinyl|lp)\b/i);
+  }
+
+  if (mediaType === "cd") {
+    if (hasToken(binding, /vinyl/i)) return false;
+    if (hasToken(binding, /(audio\s*cd|\bcd\b)/i)) return true;
+    return hasToken(title, /\bcd\b/i);
+  }
+
+  return true;
+}
+
+function pickBuyBoxListingOnly(item: any) {
+  const listings: any[] = item?.Offers?.Listings ?? [];
+  if (!listings.length) return null;
+
+  const buyBox = listings.find((l) => l?.IsBuyBoxWinner);
+  const candidate = buyBox ?? listings.find((l) => toCents(l?.Price?.Amount));
+  if (!candidate) return null;
+
+  const priceCents = toCents(candidate?.Price?.Amount);
+  if (!priceCents) return null;
+
+  return candidate;
+}
+
+function extractCurrentPricing(item: any): CurrentPricing {
+  const listing = pickBuyBoxListingOnly(item);
+  if (!listing) {
+    return {
+      priceCents: null,
+      listCents: null,
+      currency: null,
+      discountPct: null,
+      hadDiscountSignal: false,
+    };
+  }
+
+  const priceCents = toCents(listing?.Price?.Amount);
+  const listFromBasis = toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount);
+  const savingsPct = Number(listing?.Price?.Savings?.Percentage);
+  const savingsAmt = toCents(listing?.Price?.Savings?.Amount);
+  const listCents = listFromBasis ?? (priceCents && savingsAmt ? priceCents + savingsAmt : null);
+
+  let discountPct: number | null = null;
+  let hadDiscountSignal = false;
+
+  if (Number.isFinite(savingsPct) && savingsPct > 0) {
+    discountPct = Math.round(savingsPct * 10) / 10;
+    hadDiscountSignal = true;
+  } else if (savingsAmt && listCents) {
+    discountPct = Math.round((savingsAmt / listCents) * 1000) / 10;
+    hadDiscountSignal = true;
+  } else if (priceCents && listCents) {
+    discountPct = computeDiscountPct(priceCents, listCents);
+    hadDiscountSignal = discountPct != null;
+  }
+
+  return {
+    priceCents,
+    listCents,
+    currency: listing?.Price?.Currency ?? null,
+    discountPct,
+    hadDiscountSignal,
+  };
+}
+
 let _paapiLastAt = 0;
 let _paapiChain: Promise<void> = Promise.resolve();
 
@@ -111,7 +239,7 @@ async function paapiGate() {
   await _paapiChain;
 }
 
-async function withRetry<T>(fn: () => Promise<T>, attempts = 6) {
+async function withRetry<T>(fn: () => Promise<T>, attempts = 4) {
   let lastErr: any = null;
 
   for (let i = 0; i < attempts; i++) {
@@ -156,6 +284,16 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 6) {
   throw lastErr;
 }
 
+function getPaapiAuthConfig() {
+  return {
+    host: process.env.AMAZON_HOST!,
+    region: process.env.AMAZON_REGION!,
+    accessKey: process.env.AMAZON_ACCESS_KEY!,
+    secretKey: process.env.AMAZON_SECRET_KEY!,
+    partnerTag: process.env.AMAZON_PARTNER_TAG!,
+  };
+}
+
 async function paapiSearch({
   keyword,
   itemPage,
@@ -165,11 +303,7 @@ async function paapiSearch({
   itemPage: number;
   searchIndex: string;
 }) {
-  const host = process.env.AMAZON_HOST!;
-  const region = process.env.AMAZON_REGION!;
-  const accessKey = process.env.AMAZON_ACCESS_KEY!;
-  const secretKey = process.env.AMAZON_SECRET_KEY!;
-  const partnerTag = process.env.AMAZON_PARTNER_TAG!;
+  const { host, region, accessKey, secretKey, partnerTag } = getPaapiAuthConfig();
 
   const body = {
     Keywords: keyword,
@@ -182,6 +316,7 @@ async function paapiSearch({
     Resources: [
       "ItemInfo.Title",
       "ItemInfo.ByLineInfo",
+      "ItemInfo.Classifications",
       "Images.Primary.Large",
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
@@ -218,18 +353,48 @@ async function paapiSearch({
   return resp.data?.SearchResult?.Items || [];
 }
 
-function pickBuyBoxListingOnly(item: any) {
-  const listings: any[] = item?.Offers?.Listings ?? [];
-  if (!listings.length) return null;
+async function paapiGetItems(asins: string[]) {
+  const { host, region, accessKey, secretKey, partnerTag } = getPaapiAuthConfig();
 
-  const buyBox = listings.find((l) => l?.IsBuyBoxWinner);
-  const candidate = buyBox ?? listings.find((l) => toCents(l?.Price?.Amount));
-  if (!candidate) return null;
+  const body = {
+    ItemIds: asins,
+    ItemIdType: "ASIN",
+    Condition: "New",
+    PartnerTag: partnerTag,
+    PartnerType: "Associates",
+    Resources: [
+      "ItemInfo.Title",
+      "ItemInfo.Classifications",
+      "Offers.Listings.Price",
+      "Offers.Listings.SavingBasis",
+      "Offers.Listings.IsBuyBoxWinner",
+      "Offers.Listings.MerchantInfo",
+    ],
+  };
 
-  const priceCents = toCents(candidate?.Price?.Amount);
-  if (!priceCents) return null;
+  const signed = aws4.sign(
+    {
+      host,
+      method: "POST",
+      path: "/paapi5/getitems",
+      service: "ProductAdvertisingAPI",
+      region,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "content-encoding": "amz-1.0",
+        "x-amz-target": "com.amazon.paapi5.v1.ProductAdvertisingAPIv1.GetItems",
+      },
+      body: JSON.stringify(body),
+    },
+    { accessKeyId: accessKey, secretAccessKey: secretKey }
+  );
 
-  return candidate;
+  const resp = await axios.post(`https://${host}/paapi5/getitems`, signed.body, {
+    headers: signed.headers as any,
+    timeout: 15000,
+  });
+
+  return resp.data?.ItemsResult?.Items || [];
 }
 
 async function upsertChunked(rows: DealRow[]) {
@@ -261,6 +426,188 @@ function getPrimaryBrowseNodeId(item: any): number | null {
   return null;
 }
 
+async function updateDealRows(opts: {
+  mediaType: MediaConfig["media_type"];
+  feedKey: string;
+  rows: Array<Record<string, any>>;
+}) {
+  const { mediaType, feedKey, rows } = opts;
+  if (!rows.length) return { updated: 0, errors: [] as any[] };
+
+  const supabase = getSupabaseAdmin();
+  const errors: any[] = [];
+  let updated = 0;
+
+  for (const row of rows) {
+    const { asin, ...fields } = row;
+    if (!asin) continue;
+
+    const { error } = await supabase
+      .from("deals")
+      .update(fields)
+      .eq("media_type", mediaType)
+      .eq("feed_key", feedKey)
+      .eq("asin", asin);
+
+    if (error) {
+      errors.push({ asin, error: error.message });
+      continue;
+    }
+
+    updated += 1;
+  }
+
+  return { updated, errors };
+}
+
+async function revalidateActiveDeals(opts: {
+  mediaType: MediaConfig["media_type"];
+  feedKey: string;
+  minDiscount: number;
+  limit: number;
+  offset: number;
+}) {
+  const supabase = getSupabaseAdmin();
+  const now = new Date().toISOString();
+
+  const { data: rows, error } = await supabase
+    .from("deals")
+    .select("asin,title,price_cents,list_price_cents,currency")
+    .eq("media_type", opts.mediaType)
+    .eq("feed_key", opts.feedKey)
+    .gte("discount_pct", opts.minDiscount)
+    .order("last_seen_at", { ascending: true })
+    .range(opts.offset, opts.offset + opts.limit - 1);
+
+  if (error) throw new Error(error.message);
+
+  const byAsin = new Map<string, ActiveDealRow>();
+  for (const row of rows ?? []) {
+    if (!row?.asin) continue;
+    byAsin.set(String(row.asin), {
+      asin: String(row.asin),
+      title: row.title ?? null,
+      price_cents: row.price_cents ?? null,
+      list_price_cents: row.list_price_cents ?? null,
+      currency: row.currency ?? null,
+    });
+  }
+
+  const asins = Array.from(byAsin.keys());
+  const chunks: string[][] = [];
+  for (let i = 0; i < asins.length; i += ITEM_COUNT) {
+    chunks.push(asins.slice(i, i + ITEM_COUNT));
+  }
+
+  const discountedRows: any[] = [];
+  const invalidRows: any[] = [];
+  const errorsOut: any[] = [];
+
+  for (const chunk of chunks) {
+    let items: any[] = [];
+    try {
+      items = await withRetry(() => paapiGetItems(chunk));
+    } catch (e: any) {
+      errorsOut.push({ asins: chunk, error: extractAxiosError(e) });
+      continue;
+    }
+
+    const itemByAsin = new Map<string, any>();
+    for (const item of items ?? []) {
+      const asin = item?.ASIN;
+      if (!asin) continue;
+      itemByAsin.set(String(asin), item);
+    }
+
+    for (const asin of chunk) {
+      const existing = byAsin.get(asin) ?? {
+        asin,
+        title: null,
+        price_cents: null,
+        list_price_cents: null,
+        currency: null,
+      };
+
+      const item = itemByAsin.get(asin);
+      if (!item) {
+        invalidRows.push({
+          asin,
+          discount_pct: 0,
+          updated_at: now,
+        });
+        continue;
+      }
+
+      if (!itemMatchesMediaType(opts.mediaType, item, existing.title)) {
+        const mismatchPricing = extractCurrentPricing(item);
+        invalidRows.push({
+          asin,
+          price_cents: mismatchPricing.priceCents ?? existing.price_cents,
+          list_price_cents: mismatchPricing.listCents,
+          currency: mismatchPricing.currency ?? existing.currency,
+          discount_pct: 0,
+          updated_at: now,
+        });
+        continue;
+      }
+
+      const pricing = extractCurrentPricing(item);
+      const priceCents = pricing.priceCents ?? existing.price_cents;
+      const listCents = pricing.listCents;
+      const currency = pricing.currency ?? existing.currency;
+
+      if (priceCents == null) {
+        invalidRows.push({
+          asin,
+          discount_pct: 0,
+          updated_at: now,
+        });
+        continue;
+      }
+
+      if (pricing.discountPct != null && pricing.discountPct >= opts.minDiscount) {
+        discountedRows.push({
+          asin,
+          price_cents: priceCents,
+          list_price_cents: listCents,
+          currency,
+          discount_pct: pricing.discountPct,
+          updated_at: now,
+          last_seen_at: now,
+        });
+      } else {
+        invalidRows.push({
+          asin,
+          price_cents: priceCents,
+          list_price_cents: listCents,
+          currency,
+          discount_pct: 0,
+          updated_at: now,
+        });
+      }
+    }
+  }
+
+  const { updated: updatedDiscounted, errors: discountedErrors } = await updateDealRows({
+    mediaType: opts.mediaType,
+    feedKey: opts.feedKey,
+    rows: discountedRows,
+  });
+  const { updated: updatedInvalid, errors: invalidErrors } = await updateDealRows({
+    mediaType: opts.mediaType,
+    feedKey: opts.feedKey,
+    rows: invalidRows,
+  });
+
+  return {
+    ok: true,
+    attempted_asins: asins.length,
+    updated_discounted: updatedDiscounted,
+    updated_invalid: updatedInvalid,
+    errors: [...errorsOut, ...discountedErrors, ...invalidErrors],
+  };
+}
+
 export async function refreshMedia(req: Request, config: MediaConfig) {
   const url = new URL(req.url);
   const token = url.searchParams.get("token");
@@ -289,6 +636,14 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
   const delayMs = Math.min(Math.max(Number(url.searchParams.get("delayMs") ?? "800"), 0), 5000);
 
+  const revalidateActive = ["1", "true", "yes"].includes(
+    String(url.searchParams.get("revalidateActive") ?? "").toLowerCase()
+  );
+  const activeLimit = Math.min(Math.max(Number(url.searchParams.get("activeLimit") ?? "300"), 1), 1000);
+  const activeOffset = Math.max(0, Number(url.searchParams.get("activeOffset") ?? "0"));
+  const revalidateOnlyParam = String(url.searchParams.get("revalidateOnly") ?? "").toLowerCase();
+  const revalidateOnly = revalidateActive && !["0", "false", "no"].includes(revalidateOnlyParam);
+
   const now = new Date().toISOString();
   const syncId = randomUUID();
 
@@ -311,9 +666,11 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     items_with_discount_data: 0,
     filtered_under_min_discount: 0,
     filtered_over_max_price: 0,
+    filtered_wrong_media: 0,
     kept: 0,
     db_sync_rows_after_upsert: null as number | null,
     db_feedkey_integrity_warning: null as string | null,
+    revalidate_active: null as any,
   };
 
   const supabase = getSupabaseAdmin();
@@ -341,6 +698,48 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
   }
 
   try {
+    if (revalidateActive) {
+      try {
+        stats.revalidate_active = await revalidateActiveDeals({
+          mediaType: config.media_type,
+          feedKey,
+          minDiscount,
+          limit: activeLimit,
+          offset: activeOffset,
+        });
+      } catch (e: any) {
+        stats.revalidate_active = { ok: false, error: e?.message ?? String(e) };
+      }
+
+      if (revalidateOnly) {
+        if (runId) {
+          try {
+            await supabase
+              .from("refresh_runs")
+              .update({
+                ok: true,
+                finished_at: new Date().toISOString(),
+                found: 0,
+                saved: 0,
+                stats,
+                errors,
+              })
+              .eq("id", runId);
+          } catch {}
+        }
+
+        return Response.json({
+          ok: true,
+          media_type: config.media_type,
+          feed_key: feedKey,
+          revalidate_only: true,
+          revalidate_active: stats.revalidate_active,
+          build_id: BUILD_ID,
+          sync_id: syncId,
+        });
+      }
+    }
+
     for (const kw of config.keywords) {
       const pagesForThisKeyword = Math.min(Math.max(maxPages, 1), MAX_ITEMPAGE);
 
@@ -363,36 +762,27 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           const asin = item?.ASIN;
           if (!asin || seen.has(asin)) continue;
 
-          const listing = pickBuyBoxListingOnly(item);
-          if (!listing) continue;
+          if (!itemMatchesMediaType(config.media_type, item)) {
+            stats.filtered_wrong_media += 1;
+            continue;
+          }
 
-          const priceCents = toCents(listing?.Price?.Amount);
+          const pricing = extractCurrentPricing(item);
+          const priceCents = pricing.priceCents;
+          const listCents = pricing.listCents;
+
           if (!priceCents) continue;
+
+          if (pricing.hadDiscountSignal) stats.items_with_discount_data += 1;
 
           if (mode === "under-price" && maxPriceCents != null && priceCents > maxPriceCents) {
             stats.filtered_over_max_price += 1;
             continue;
           }
 
-          const savingsPct = Number(listing?.Price?.Savings?.Percentage);
-          const savingsAmt = toCents(listing?.Price?.Savings?.Amount);
-          let listCents = toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount);
-          if (!listCents && savingsAmt && priceCents) listCents = priceCents + savingsAmt;
-
-          let discountPct: number | null = null;
-          if (Number.isFinite(savingsPct) && savingsPct > 0) {
-            discountPct = Math.round(savingsPct * 10) / 10;
-          } else if (savingsAmt && listCents) {
-            discountPct = Math.round((savingsAmt / listCents) * 1000) / 10;
-          } else {
-            discountPct = computeDiscountPct(priceCents, listCents);
-          }
-
-          if (discountPct !== null) stats.items_with_discount_data += 1;
-
           if (mode === "discount") {
-            if (discountPct === null) continue;
-            if (discountPct < minDiscount) {
+            if (pricing.discountPct === null) continue;
+            if (pricing.discountPct < minDiscount) {
               stats.filtered_under_min_discount += 1;
               continue;
             }
@@ -410,8 +800,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             amazon_url: `https://www.amazon.com/dp/${asin}?tag=${process.env.AMAZON_PARTNER_TAG}`,
             price_cents: priceCents,
             list_price_cents: listCents,
-            currency: listing?.Price?.Currency ?? null,
-            discount_pct: discountPct,
+            currency: pricing.currency,
+            discount_pct: pricing.discountPct,
             category: "media",
             media_type: config.media_type,
             feed_key: feedKey,
@@ -455,9 +845,6 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           `This usually means your deals table unique constraint does NOT include feed_key, so another feed is overwriting rows.`;
       }
     } catch {}
-
-    // NOTE: We intentionally do not delete deals rows here.
-    // Deals should be invalidated via discount_pct updates, not removed.
 
     if (runId) {
       try {

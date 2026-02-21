@@ -22,28 +22,28 @@ function uniqClean(list: string[]): string[] {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
-  const hotPerRun = Number(searchParams.get("hotPerRun") ?? "50");
-  const catalogPerRun = Number(searchParams.get("catalogPerRun") ?? "100");
+  const hotPerRun = Math.min(Math.max(Number(searchParams.get("hotPerRun") ?? "20"), 0), 50);
+  const catalogPerRun = Math.min(Math.max(Number(searchParams.get("catalogPerRun") ?? "25"), 0), 75);
   const catalogOffsetRaw = searchParams.get("catalogOffset");
 
   const hotArtistsAll = await readArtistFile("data/hot-artists.txt");
   const catalogArtistsAll = await readArtistFile("data/catalog-artists.txt");
 
-  const hotArtists = hotArtistsAll.slice(0, Math.max(0, hotPerRun));
+  const hotArtists = hotArtistsAll.slice(0, hotPerRun);
 
   let catalogBatch: string[] = [];
   if (catalogOffsetRaw != null) {
     const catalogOffset = Number(catalogOffsetRaw ?? "0");
     const start = Math.max(0, catalogOffset);
-    const size = Math.max(0, catalogPerRun);
-    catalogBatch = catalogArtistsAll.slice(start, start + size);
+    catalogBatch = catalogArtistsAll.slice(start, start + catalogPerRun);
   } else {
     const hourSeed = Math.floor(Date.now() / 3600000);
-    catalogBatch = rotateSlice(catalogArtistsAll, Math.max(0, catalogPerRun), hourSeed);
+    catalogBatch = rotateSlice(catalogArtistsAll, catalogPerRun, hourSeed);
   }
 
   const artistKeywords = [...hotArtists, ...catalogBatch].map((a) => `"${a}" cd`);
-  const keywords = uniqClean([...CORE_KEYWORDS, ...artistKeywords]);
+  const maxKeywords = 80;
+  const keywords = uniqClean([...CORE_KEYWORDS, ...artistKeywords]).slice(0, maxKeywords);
 
   return refreshMedia(req, {
     media_type: "cd",

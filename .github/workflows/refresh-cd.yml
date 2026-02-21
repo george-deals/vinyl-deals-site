@@ -12,7 +12,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
 
     steps:
       - name: Refresh cd (discount deals) — chunked calls with backoff
@@ -31,9 +31,7 @@ jobs:
           TOTAL=60
 
           CURL_MAX_TIME=180
-          CURL_RETRIES=3
           CURL_RETRY_DELAY=10
-          CURL_RETRY_MAX_TIME=60
 
           BASE="$(echo "${BASE:-}" | tr -d '\r\n' | xargs)"
           BASE="${BASE%/}"
@@ -43,6 +41,23 @@ jobs:
 
           echo "Refreshing cd deals in chunks..."
           echo "BASE: ${BASE}"
+
+          echo "Revalidating active cd deals..."
+          REVALIDATE_LIMIT=25
+          REVALIDATE_TOTAL=300
+          revalidate_offset=0
+          while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
+            revalidate_url="${BASE}/api/refresh-cd?token=${TOKEN}&revalidateActive=1&revalidateOnly=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}"
+            echo "Revalidate offset=${revalidate_offset} limit=${REVALIDATE_LIMIT}"
+            if ! curl -sS --fail-with-body \
+              --connect-timeout 20 \
+              --max-time 45 \
+              "$revalidate_url" | head -c 2000; then
+              echo "WARNING: revalidation call failed; continuing..."
+            fi
+            revalidate_offset=$((revalidate_offset + REVALIDATE_LIMIT))
+            sleep 1
+          done
 
           fails=0
           offset=0
