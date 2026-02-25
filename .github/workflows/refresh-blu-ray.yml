@@ -49,7 +49,7 @@ jobs:
             sleep 1
           done
 
-          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=1&delayMs=0&moviesPerRun=10"
+          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=2&delayMs=0&moviesPerRun=25"
           echo "URL: $URL"
 
           for i in 1 2; do

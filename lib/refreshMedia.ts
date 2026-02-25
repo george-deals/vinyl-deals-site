@@ -55,6 +55,7 @@ type ActiveDealRow = {
   price_cents: number | null;
   list_price_cents: number | null;
   currency: string | null;
+  discount_pct: number | null;
 };
 
 type CurrentPricing = {
@@ -137,6 +138,7 @@ function itemMatchesMediaType(
 ): boolean {
   const binding = extractBinding(item);
   const title = normalizeText(item?.ItemInfo?.Title?.DisplayValue ?? fallbackTitle ?? "");
+  const hasSignal = Boolean(binding || title);
 
   if (mediaType === "4k-uhd") {
     return titleLooks4k(title) || hasToken(binding, /(4k|ultra hd|uhd)/i);
@@ -145,7 +147,10 @@ function itemMatchesMediaType(
   if (mediaType === "blu-ray") {
     if (titleLooks4k(title) || hasToken(binding, /(4k|ultra hd|uhd)/i)) return false;
     if (hasToken(binding, /(blu[- ]?ray|bluray|bd)/i)) return true;
-    return hasToken(title, /\bblu[- ]?ray\b|\bbluray\b/i);
+    if (hasToken(title, /\bblu[- ]?ray\b|\bbluray\b/i)) return true;
+    if (hasToken(binding, /dvd|vinyl|\bcd\b|audio\s*cd/i)) return false;
+    if (hasToken(title, /\bdvd\b|\bvinyl\b|\blp\b|\bcd\b/i)) return false;
+    return !hasSignal;
   }
 
   if (mediaType === "dvd") {
@@ -153,19 +158,29 @@ function itemMatchesMediaType(
     if (hasToken(binding, /(4k|ultra hd|uhd|blu[- ]?ray|bluray|bd)/i)) return false;
     if (hasToken(title, /\bblu[- ]?ray\b|\bbluray\b/i)) return false;
     if (hasToken(binding, /dvd/i)) return true;
-    return hasToken(title, /\bdvd\b/i);
+    if (hasToken(title, /\bdvd\b/i)) return true;
+    if (hasToken(binding, /vinyl|\bcd\b|audio\s*cd/i)) return false;
+    if (hasToken(title, /\bvinyl\b|\blp\b|\bcd\b/i)) return false;
+    return !hasSignal;
   }
 
   if (mediaType === "vinyl") {
     if (hasToken(binding, /vinyl/i)) return true;
+    if (hasToken(binding, /dvd|blu[- ]?ray|bluray|bd|4k|ultra hd|uhd/i)) return false;
     if (hasToken(binding, /(audio\s*cd|\bcd\b)/i)) return false;
-    return hasToken(title, /\b(vinyl|lp)\b/i);
+    if (hasToken(title, /\b(vinyl|lp)\b/i)) return true;
+    if (hasToken(title, /\bdvd\b|\bblu[- ]?ray\b|\bbluray\b|\b4k\b|\buhd\b|\bcd\b/i)) return false;
+    return !hasSignal;
   }
 
   if (mediaType === "cd") {
     if (hasToken(binding, /vinyl/i)) return false;
     if (hasToken(binding, /(audio\s*cd|\bcd\b)/i)) return true;
-    return hasToken(title, /\bcd\b/i);
+    if (hasToken(binding, /dvd|blu[- ]?ray|bluray|bd|4k|ultra hd|uhd/i)) return false;
+    if (hasToken(title, /\bcd\b/i)) return true;
+    if (hasToken(title, /\bvinyl\b|\blp\b|\bdvd\b|\bblu[- ]?ray\b|\bbluray\b|\b4k\b|\buhd\b/i))
+      return false;
+    return !hasSignal;
   }
 
   return true;
@@ -472,7 +487,7 @@ async function revalidateActiveDeals(opts: {
 
   const { data: rows, error } = await supabase
     .from("deals")
-    .select("asin,title,price_cents,list_price_cents,currency")
+    .select("asin,title,price_cents,list_price_cents,currency,discount_pct")
     .eq("media_type", opts.mediaType)
     .eq("feed_key", opts.feedKey)
     .gte("discount_pct", opts.minDiscount)
@@ -490,6 +505,7 @@ async function revalidateActiveDeals(opts: {
       price_cents: row.price_cents ?? null,
       list_price_cents: row.list_price_cents ?? null,
       currency: row.currency ?? null,
+      discount_pct: row.discount_pct == null ? null : Number(row.discount_pct),
     });
   }
 
@@ -519,6 +535,11 @@ async function revalidateActiveDeals(opts: {
       itemByAsin.set(String(asin), item);
     }
 
+    const hasPartialResponse = (items?.length ?? 0) < chunk.length;
+    if (hasPartialResponse) {
+      errorsOut.push({ asins: chunk, error: { message: "paapi_partial_response", returned: items.length } });
+    }
+
     for (const asin of chunk) {
       const existing = byAsin.get(asin) ?? {
         asin,
@@ -526,10 +547,16 @@ async function revalidateActiveDeals(opts: {
         price_cents: null,
         list_price_cents: null,
         currency: null,
+        discount_pct: null,
       };
 
       const item = itemByAsin.get(asin);
       if (!item) {
+        if (hasPartialResponse) {
+          errorsOut.push({ asin, error: { message: "paapi_missing_in_partial_response" } });
+          continue;
+        }
+
         invalidRows.push({
           asin,
           discount_pct: 0,
@@ -543,7 +570,7 @@ async function revalidateActiveDeals(opts: {
         invalidRows.push({
           asin,
           price_cents: mismatchPricing.priceCents ?? existing.price_cents,
-          list_price_cents: mismatchPricing.listCents,
+          list_price_cents: mismatchPricing.listCents ?? existing.list_price_cents,
           currency: mismatchPricing.currency ?? existing.currency,
           discount_pct: 0,
           updated_at: now,
@@ -553,7 +580,7 @@ async function revalidateActiveDeals(opts: {
 
       const pricing = extractCurrentPricing(item);
       const priceCents = pricing.priceCents ?? existing.price_cents;
-      const listCents = pricing.listCents;
+      const listCents = pricing.listCents ?? existing.list_price_cents;
       const currency = pricing.currency ?? existing.currency;
 
       if (priceCents == null) {
@@ -565,13 +592,25 @@ async function revalidateActiveDeals(opts: {
         continue;
       }
 
-      if (pricing.discountPct != null && pricing.discountPct >= opts.minDiscount) {
+      let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
+
+      if (
+        discountPct == null &&
+        existing.discount_pct != null &&
+        existing.discount_pct >= opts.minDiscount &&
+        existing.price_cents != null &&
+        priceCents <= existing.price_cents
+      ) {
+        discountPct = existing.discount_pct;
+      }
+
+      if (discountPct != null && discountPct >= opts.minDiscount) {
         discountedRows.push({
           asin,
           price_cents: priceCents,
           list_price_cents: listCents,
           currency,
-          discount_pct: pricing.discountPct,
+          discount_pct: discountPct,
           updated_at: now,
           last_seen_at: now,
         });
@@ -642,7 +681,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
   const activeLimit = Math.min(Math.max(Number(url.searchParams.get("activeLimit") ?? "300"), 1), 1000);
   const activeOffset = Math.max(0, Number(url.searchParams.get("activeOffset") ?? "0"));
   const revalidateOnlyParam = String(url.searchParams.get("revalidateOnly") ?? "").toLowerCase();
-  const revalidateOnly = revalidateActive && !["0", "false", "no"].includes(revalidateOnlyParam);
+  const revalidateOnly = revalidateActive && ["1", "true", "yes"].includes(revalidateOnlyParam);
 
   const now = new Date().toISOString();
   const syncId = randomUUID();
@@ -667,6 +706,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     filtered_under_min_discount: 0,
     filtered_over_max_price: 0,
     filtered_wrong_media: 0,
+    fallback_existing_list_used: 0,
+    fallback_existing_discount_used: 0,
     kept: 0,
     db_sync_rows_after_upsert: null as number | null,
     db_feedkey_integrity_warning: null as string | null,
@@ -674,6 +715,40 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
   };
 
   const supabase = getSupabaseAdmin();
+
+  const existingDealsByAsin = new Map<
+    string,
+    {
+      title: string | null;
+      artist: string | null;
+      image_url: string | null;
+      price_cents: number | null;
+      list_price_cents: number | null;
+      currency: string | null;
+      discount_pct: number | null;
+    }
+  >();
+
+  try {
+    const { data: existingRows } = await supabase
+      .from("deals")
+      .select("asin,title,artist,image_url,price_cents,list_price_cents,currency,discount_pct")
+      .eq("media_type", config.media_type)
+      .eq("feed_key", feedKey);
+
+    for (const row of existingRows ?? []) {
+      if (!row?.asin) continue;
+      existingDealsByAsin.set(String(row.asin), {
+        title: row.title ?? null,
+        artist: row.artist ?? null,
+        image_url: row.image_url ?? null,
+        price_cents: row.price_cents ?? null,
+        list_price_cents: row.list_price_cents ?? null,
+        currency: row.currency ?? null,
+        discount_pct: row.discount_pct == null ? null : Number(row.discount_pct),
+      });
+    }
+  } catch {}
 
   let runId: number | null = null;
   try {
@@ -767,11 +842,18 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             continue;
           }
 
+          const existing = existingDealsByAsin.get(String(asin));
           const pricing = extractCurrentPricing(item);
-          const priceCents = pricing.priceCents;
-          const listCents = pricing.listCents;
+          const priceCents = pricing.priceCents ?? existing?.price_cents ?? null;
 
-          if (!priceCents) continue;
+          if (priceCents == null) continue;
+
+          const listCents = pricing.listCents ?? existing?.list_price_cents ?? null;
+          let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
+
+          if (!pricing.hadDiscountSignal && pricing.listCents == null && existing?.list_price_cents != null) {
+            stats.fallback_existing_list_used += 1;
+          }
 
           if (pricing.hadDiscountSignal) stats.items_with_discount_data += 1;
 
@@ -781,8 +863,19 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           }
 
           if (mode === "discount") {
-            if (pricing.discountPct === null) continue;
-            if (pricing.discountPct < minDiscount) {
+            if (
+              discountPct == null &&
+              existing?.discount_pct != null &&
+              existing.discount_pct >= minDiscount &&
+              existing.price_cents != null &&
+              priceCents <= existing.price_cents
+            ) {
+              discountPct = existing.discount_pct;
+              stats.fallback_existing_discount_used += 1;
+            }
+
+            if (discountPct === null) continue;
+            if (discountPct < minDiscount) {
               stats.filtered_under_min_discount += 1;
               continue;
             }
@@ -790,18 +883,18 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
           const rank = Number(item?.BrowseNodeInfo?.WebsiteSalesRank?.SalesRank) || null;
           const browseNodeId = getPrimaryBrowseNodeId(item);
-          const artist = extractArtist(item);
+          const artist = extractArtist(item) ?? existing?.artist ?? null;
 
           keep.push({
             asin,
-            title: item?.ItemInfo?.Title?.DisplayValue ?? asin,
+            title: item?.ItemInfo?.Title?.DisplayValue ?? existing?.title ?? asin,
             artist,
-            image_url: item?.Images?.Primary?.Large?.URL ?? null,
+            image_url: item?.Images?.Primary?.Large?.URL ?? existing?.image_url ?? null,
             amazon_url: `https://www.amazon.com/dp/${asin}?tag=${process.env.AMAZON_PARTNER_TAG}`,
             price_cents: priceCents,
             list_price_cents: listCents,
-            currency: pricing.currency,
-            discount_pct: pricing.discountPct,
+            currency: pricing.currency ?? existing?.currency ?? null,
+            discount_pct: discountPct,
             category: "media",
             media_type: config.media_type,
             feed_key: feedKey,
