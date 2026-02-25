@@ -58,6 +58,16 @@ type ActiveDealRow = {
   discount_pct: number | null;
 };
 
+type ExistingDealSnapshot = {
+  title: string | null;
+  artist: string | null;
+  image_url: string | null;
+  price_cents: number | null;
+  list_price_cents: number | null;
+  currency: string | null;
+  discount_pct: number | null;
+};
+
 type CurrentPricing = {
   priceCents: number | null;
   listCents: number | null;
@@ -647,6 +657,110 @@ async function revalidateActiveDeals(opts: {
   };
 }
 
+async function bootstrapFromExistingDeals(opts: {
+  mediaType: MediaConfig["media_type"];
+  feedKey: string;
+  minDiscount: number;
+  limit: number;
+  now: string;
+  syncId: string;
+  existingDealsByAsin: Map<string, ExistingDealSnapshot>;
+}) {
+  const ordered = Array.from(opts.existingDealsByAsin.entries()).sort((a, b) => {
+    const discA = Number(a[1]?.discount_pct ?? -1);
+    const discB = Number(b[1]?.discount_pct ?? -1);
+    if (discA !== discB) return discB - discA;
+
+    const listA = a[1]?.list_price_cents != null ? 1 : 0;
+    const listB = b[1]?.list_price_cents != null ? 1 : 0;
+    return listB - listA;
+  });
+
+  const asins = ordered.slice(0, opts.limit).map(([asin]) => asin);
+  const chunks: string[][] = [];
+  for (let i = 0; i < asins.length; i += ITEM_COUNT) {
+    chunks.push(asins.slice(i, i + ITEM_COUNT));
+  }
+
+  const rows: DealRow[] = [];
+  const errorsOut: any[] = [];
+  let fallbackExistingDiscountUsed = 0;
+
+  for (const chunk of chunks) {
+    let items: any[] = [];
+    try {
+      items = await withRetry(() => paapiGetItems(chunk));
+    } catch (e: any) {
+      errorsOut.push({ asins: chunk, error: extractAxiosError(e) });
+      continue;
+    }
+
+    const itemByAsin = new Map<string, any>();
+    for (const item of items ?? []) {
+      const asin = item?.ASIN;
+      if (!asin) continue;
+      itemByAsin.set(String(asin), item);
+    }
+
+    for (const asin of chunk) {
+      const existing = opts.existingDealsByAsin.get(asin);
+      if (!existing) continue;
+
+      const item = itemByAsin.get(asin);
+      if (!item) continue;
+      if (!itemMatchesMediaType(opts.mediaType, item, existing.title)) continue;
+
+      const pricing = extractCurrentPricing(item);
+      const priceCents = pricing.priceCents ?? existing.price_cents;
+      if (priceCents == null) continue;
+
+      const listCents = pricing.listCents ?? existing.list_price_cents;
+      let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
+
+      if (
+        discountPct == null &&
+        existing.discount_pct != null &&
+        existing.discount_pct >= opts.minDiscount &&
+        existing.price_cents != null &&
+        priceCents <= existing.price_cents
+      ) {
+        discountPct = existing.discount_pct;
+        fallbackExistingDiscountUsed += 1;
+      }
+
+      if (discountPct == null || discountPct < opts.minDiscount) continue;
+
+      rows.push({
+        asin,
+        title: item?.ItemInfo?.Title?.DisplayValue ?? existing.title ?? asin,
+        artist: existing.artist ?? null,
+        image_url: existing.image_url ?? null,
+        amazon_url: "https://www.amazon.com/dp/" + asin + "?tag=" + process.env.AMAZON_PARTNER_TAG,
+        price_cents: priceCents,
+        list_price_cents: listCents,
+        currency: pricing.currency ?? existing.currency ?? null,
+        discount_pct: discountPct,
+        category: "media",
+        media_type: opts.mediaType,
+        feed_key: opts.feedKey,
+        sales_rank: null,
+        genre: null,
+        browse_node_id: null,
+        updated_at: opts.now,
+        last_seen_at: opts.now,
+        sync_id: opts.syncId,
+      });
+    }
+  }
+
+  return {
+    attempted_asins: asins.length,
+    rows,
+    fallback_existing_discount_used: fallbackExistingDiscountUsed,
+    errors: errorsOut,
+  };
+}
+
 export async function refreshMedia(req: Request, config: MediaConfig) {
   const url = new URL(req.url);
   const token = url.searchParams.get("token");
@@ -712,22 +826,12 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     db_sync_rows_after_upsert: null as number | null,
     db_feedkey_integrity_warning: null as string | null,
     revalidate_active: null as any,
+    bootstrap_from_existing: null as any,
   };
 
   const supabase = getSupabaseAdmin();
 
-  const existingDealsByAsin = new Map<
-    string,
-    {
-      title: string | null;
-      artist: string | null;
-      image_url: string | null;
-      price_cents: number | null;
-      list_price_cents: number | null;
-      currency: string | null;
-      discount_pct: number | null;
-    }
-  >();
+  const existingDealsByAsin = new Map<string, ExistingDealSnapshot>();
 
   try {
     const { data: existingRows } = await supabase
@@ -911,6 +1015,43 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
         }
 
         if (delayMs > 0) await sleep(delayMs);
+      }
+    }
+
+    if (mode === "discount" && keep.length === 0 && existingDealsByAsin.size > 0) {
+      const bootstrapLimit = Math.min(
+        Math.max(Number(url.searchParams.get("bootstrapLimit") ?? "500"), 50),
+        1500
+      );
+
+      const bootstrap = await bootstrapFromExistingDeals({
+        mediaType: config.media_type,
+        feedKey,
+        minDiscount,
+        limit: bootstrapLimit,
+        now,
+        syncId,
+        existingDealsByAsin,
+      });
+
+      if (bootstrap.rows.length) {
+        for (const row of bootstrap.rows) {
+          if (seen.has(row.asin)) continue;
+          keep.push(row);
+          seen.add(row.asin);
+          stats.kept += 1;
+        }
+      }
+
+      stats.bootstrap_from_existing = {
+        attempted_asins: bootstrap.attempted_asins,
+        kept: bootstrap.rows.length,
+        fallback_existing_discount_used: bootstrap.fallback_existing_discount_used,
+        errors: bootstrap.errors.length,
+      };
+
+      if (bootstrap.errors.length) {
+        errors.push(...bootstrap.errors);
       }
     }
 
