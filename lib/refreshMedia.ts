@@ -150,7 +150,7 @@ function itemMatchesMediaType(
     if (hasToken(title, /\bblu[- ]?ray\b|\bbluray\b/i)) return true;
     if (hasToken(binding, /dvd|vinyl|\bcd\b|audio\s*cd/i)) return false;
     if (hasToken(title, /\bdvd\b|\bvinyl\b|\blp\b|\bcd\b/i)) return false;
-    return !hasSignal;
+    return true;
   }
 
   if (mediaType === "dvd") {
@@ -161,7 +161,7 @@ function itemMatchesMediaType(
     if (hasToken(title, /\bdvd\b/i)) return true;
     if (hasToken(binding, /vinyl|\bcd\b|audio\s*cd/i)) return false;
     if (hasToken(title, /\bvinyl\b|\blp\b|\bcd\b/i)) return false;
-    return !hasSignal;
+    return true;
   }
 
   if (mediaType === "vinyl") {
@@ -180,7 +180,7 @@ function itemMatchesMediaType(
     if (hasToken(title, /\bcd\b/i)) return true;
     if (hasToken(title, /\bvinyl\b|\blp\b|\bdvd\b|\bblu[- ]?ray\b|\bbluray\b|\b4k\b|\buhd\b/i))
       return false;
-    return !hasSignal;
+    return true;
   }
 
   return true;
