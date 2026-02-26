@@ -537,6 +537,46 @@ async function updateDealRows(opts: {
   return { updated, errors };
 }
 
+async function loadRecentPriceBaselines(opts: {
+  supabase: any;
+  asins: string[];
+  lookbackDays?: number;
+}) {
+  const uniqAsins = Array.from(new Set((opts.asins ?? []).filter(Boolean)));
+  if (!uniqAsins.length) return new Map<string, number>();
+
+  const sinceIso = new Date(Date.now() - (opts.lookbackDays ?? 30) * 24 * 60 * 60 * 1000).toISOString();
+  const out = new Map<string, number>();
+  const CHUNK = 150;
+
+  for (let i = 0; i < uniqAsins.length; i += CHUNK) {
+    const chunk = uniqAsins.slice(i, i + CHUNK);
+
+    const { data, error } = await opts.supabase
+      .from("asin_price_history")
+      .select("asin,price_cents,list_price_cents")
+      .in("asin", chunk)
+      .gte("checked_at", sinceIso);
+
+    if (error) continue;
+
+    for (const row of data ?? []) {
+      const asin = row?.asin ? String(row.asin) : "";
+      if (!asin) continue;
+
+      const price = Number(row?.price_cents);
+      const list = Number(row?.list_price_cents);
+      const baseline = Math.max(Number.isFinite(price) ? price : 0, Number.isFinite(list) ? list : 0);
+      if (!Number.isFinite(baseline) || baseline <= 0) continue;
+
+      const prev = out.get(asin) ?? 0;
+      if (baseline > prev) out.set(asin, Math.round(baseline));
+    }
+  }
+
+  return out;
+}
+
 async function revalidateActiveDeals(opts: {
   mediaType: MediaConfig["media_type"];
   feedKey: string;
@@ -717,6 +757,7 @@ async function bootstrapFromExistingDeals(opts: {
   now: string;
   syncId: string;
   existingDealsByAsin: Map<string, ExistingDealSnapshot>;
+  supabase: any;
 }) {
   const ordered = Array.from(opts.existingDealsByAsin.entries()).sort((a, b) => {
     const discA = Number(a[1]?.discount_pct ?? -1);
@@ -737,6 +778,7 @@ async function bootstrapFromExistingDeals(opts: {
   const rows: DealRow[] = [];
   const errorsOut: any[] = [];
   let fallbackExistingDiscountUsed = 0;
+  let fallbackHistoryBaselineUsed = 0;
 
   for (const chunk of chunks) {
     let items: any[] = [];
@@ -754,6 +796,11 @@ async function bootstrapFromExistingDeals(opts: {
       itemByAsin.set(String(asin), item);
     }
 
+    const historyBaselineByAsin = await loadRecentPriceBaselines({
+      supabase: opts.supabase,
+      asins: chunk,
+    });
+
     for (const asin of chunk) {
       const existing = opts.existingDealsByAsin.get(asin);
       if (!existing) continue;
@@ -766,8 +813,18 @@ async function bootstrapFromExistingDeals(opts: {
       const priceCents = pricing.priceCents;
       if (priceCents == null) continue;
 
-      const listCents = pricing.listCents ?? existing.list_price_cents;
+      let listCents = pricing.listCents ?? existing.list_price_cents;
       let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
+
+      const historyBaseline = historyBaselineByAsin.get(asin) ?? null;
+      if (discountPct == null && historyBaseline != null && historyBaseline > priceCents) {
+        const historyDiscount = computeDiscountPct(priceCents, historyBaseline);
+        if (historyDiscount != null) {
+          discountPct = historyDiscount;
+          listCents = Math.max(listCents ?? 0, historyBaseline);
+          fallbackHistoryBaselineUsed += 1;
+        }
+      }
 
       if (
         discountPct == null &&
@@ -809,6 +866,7 @@ async function bootstrapFromExistingDeals(opts: {
     attempted_asins: asins.length,
     rows,
     fallback_existing_discount_used: fallbackExistingDiscountUsed,
+    fallback_history_baseline_used: fallbackHistoryBaselineUsed,
     errors: errorsOut,
   };
 }
@@ -883,6 +941,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     filtered_wrong_media: 0,
     fallback_existing_list_used: 0,
     fallback_existing_discount_used: 0,
+    fallback_history_baseline_used: 0,
     kept: 0,
     db_sync_rows_after_upsert: null as number | null,
     db_feedkey_integrity_warning: null as string | null,
@@ -1005,6 +1064,14 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
         stats.items_returned += items.length;
         if (!items.length) break;
 
+        let historyBaselineByAsin = new Map<string, number>();
+        if (mode === "discount") {
+          historyBaselineByAsin = await loadRecentPriceBaselines({
+            supabase,
+            asins: (items ?? []).map((it) => String(it?.ASIN ?? "")).filter(Boolean),
+          });
+        }
+
         for (const item of items) {
           const asin = item?.ASIN;
           if (!asin || seen.has(asin)) continue;
@@ -1020,8 +1087,18 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
           if (priceCents == null) continue;
 
-          const listCents = pricing.listCents ?? existing?.list_price_cents ?? null;
+          let listCents = pricing.listCents ?? existing?.list_price_cents ?? null;
           let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
+
+          const historyBaseline = historyBaselineByAsin.get(String(asin)) ?? null;
+          if (discountPct == null && historyBaseline != null && historyBaseline > priceCents) {
+            const historyDiscount = computeDiscountPct(priceCents, historyBaseline);
+            if (historyDiscount != null) {
+              discountPct = historyDiscount;
+              listCents = Math.max(listCents ?? 0, historyBaseline);
+              stats.fallback_history_baseline_used += 1;
+            }
+          }
 
           if (!pricing.hadDiscountSignal && pricing.listCents == null && existing?.list_price_cents != null) {
             stats.fallback_existing_list_used += 1;
@@ -1106,6 +1183,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           now,
           syncId,
           existingDealsByAsin,
+          supabase,
         });
 
         if (bootstrap.rows.length) {
@@ -1121,6 +1199,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           attempted_asins: bootstrap.attempted_asins,
           kept: bootstrap.rows.length,
           fallback_existing_discount_used: bootstrap.fallback_existing_discount_used,
+          fallback_history_baseline_used: bootstrap.fallback_history_baseline_used,
           errors: bootstrap.errors.length,
         };
 
