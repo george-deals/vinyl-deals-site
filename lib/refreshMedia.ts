@@ -210,9 +210,27 @@ function pickBuyBoxListingOnly(item: any) {
   return candidate;
 }
 
+function pickOfferSummary(item: any) {
+  const summaries: any[] = item?.Offers?.Summaries ?? [];
+  if (!summaries.length) return null;
+
+  const summaryForNew =
+    summaries.find(
+      (s) => String(s?.Condition?.Value ?? s?.Condition?.DisplayValue ?? "").toLowerCase() === "new"
+    ) ?? summaries[0];
+
+  return summaryForNew ?? null;
+}
+
 function extractCurrentPricing(item: any): CurrentPricing {
   const listing = pickBuyBoxListingOnly(item);
-  if (!listing) {
+  const summary = pickOfferSummary(item);
+
+  const summaryLow = toCents(summary?.LowestPrice?.Amount);
+  const summaryHigh = toCents(summary?.HighestPrice?.Amount);
+  const summaryCurrency = summary?.LowestPrice?.Currency ?? summary?.HighestPrice?.Currency ?? null;
+
+  if (!listing && summaryLow == null) {
     return {
       priceCents: null,
       listCents: null,
@@ -222,11 +240,25 @@ function extractCurrentPricing(item: any): CurrentPricing {
     };
   }
 
-  const priceCents = toCents(listing?.Price?.Amount);
+  const priceCents = toCents(listing?.Price?.Amount) ?? summaryLow;
+  if (priceCents == null) {
+    return {
+      priceCents: null,
+      listCents: null,
+      currency: null,
+      discountPct: null,
+      hadDiscountSignal: false,
+    };
+  }
+
   const listFromBasis = toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount);
   const savingsPct = Number(listing?.Price?.Savings?.Percentage);
   const savingsAmt = toCents(listing?.Price?.Savings?.Amount);
-  const listCents = listFromBasis ?? (priceCents && savingsAmt ? priceCents + savingsAmt : null);
+
+  const listCents =
+    listFromBasis ??
+    (priceCents && savingsAmt ? priceCents + savingsAmt : null) ??
+    (summaryHigh && summaryHigh > priceCents ? summaryHigh : null);
 
   let discountPct: number | null = null;
   let hadDiscountSignal = false;
@@ -245,7 +277,7 @@ function extractCurrentPricing(item: any): CurrentPricing {
   return {
     priceCents,
     listCents,
-    currency: listing?.Price?.Currency ?? null,
+    currency: listing?.Price?.Currency ?? summaryCurrency,
     discountPct,
     hadDiscountSignal,
   };
@@ -347,6 +379,8 @@ async function paapiSearch({
       "Offers.Listings.SavingBasis",
       "Offers.Listings.IsBuyBoxWinner",
       "Offers.Listings.MerchantInfo",
+      "Offers.Summaries.LowestPrice",
+      "Offers.Summaries.HighestPrice",
       "BrowseNodeInfo.WebsiteSalesRank",
       "BrowseNodeInfo.BrowseNodes",
       "BrowseNodeInfo.BrowseNodes.Ancestor",
@@ -394,6 +428,8 @@ async function paapiGetItems(asins: string[]) {
       "Offers.Listings.SavingBasis",
       "Offers.Listings.IsBuyBoxWinner",
       "Offers.Listings.MerchantInfo",
+      "Offers.Summaries.LowestPrice",
+      "Offers.Summaries.HighestPrice",
     ],
   };
 
