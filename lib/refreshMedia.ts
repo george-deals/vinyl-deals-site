@@ -824,6 +824,10 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
   );
 
   const delayMs = Math.min(Math.max(Number(url.searchParams.get("delayMs") ?? "800"), 0), 5000);
+  const requestBudgetMs = Math.min(
+    Math.max(Number(url.searchParams.get("requestBudgetMs") ?? "90000"), 20000),
+    170000
+  );
 
   const revalidateActive = ["1", "true", "yes"].includes(
     String(url.searchParams.get("revalidateActive") ?? "").toLowerCase()
@@ -835,6 +839,10 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
   const now = new Date().toISOString();
   const syncId = randomUUID();
+  const requestStartedAtMs = Date.now();
+  const requestElapsedMs = () => Date.now() - requestStartedAtMs;
+  const budgetExceeded = () => requestElapsedMs() >= requestBudgetMs;
+  let stoppedEarlyReason: string | null = null;
 
   const seen = new Set<string>();
   const keep: DealRow[] = [];
@@ -850,6 +858,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     max_price_cents: maxPriceCents,
     maxPages,
     delayMs,
+    request_budget_ms: requestBudgetMs,
     keywords: config.keywords.length,
     items_returned: 0,
     items_with_discount_data: 0,
@@ -861,6 +870,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     kept: 0,
     db_sync_rows_after_upsert: null as number | null,
     db_feedkey_integrity_warning: null as string | null,
+    stopped_early_reason: null as string | null,
+    request_elapsed_ms: null as number | null,
     revalidate_active: null as any,
     bootstrap_from_existing: null as any,
   };
@@ -955,10 +966,15 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       }
     }
 
-    for (const kw of config.keywords) {
+    keywordLoop: for (const kw of config.keywords) {
       const pagesForThisKeyword = Math.min(Math.max(maxPages, 1), MAX_ITEMPAGE);
 
       for (let page = 1; page <= pagesForThisKeyword; page++) {
+        if (budgetExceeded()) {
+          stoppedEarlyReason = "request_budget_exceeded_during_search";
+          break keywordLoop;
+        }
+
         let items: any[] = [];
 
         try {
@@ -1055,41 +1071,51 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     }
 
     if (mode === "discount" && keep.length === 0 && existingDealsByAsin.size > 0) {
-      const bootstrapLimit = Math.min(
-        Math.max(Number(url.searchParams.get("bootstrapLimit") ?? "500"), 50),
-        1500
-      );
+      if (budgetExceeded()) {
+        stats.bootstrap_from_existing = {
+          skipped: true,
+          reason: "request_budget_exceeded_before_bootstrap",
+        };
+      } else {
+        const bootstrapLimit = Math.min(
+          Math.max(Number(url.searchParams.get("bootstrapLimit") ?? "120"), 20),
+          400
+        );
 
-      const bootstrap = await bootstrapFromExistingDeals({
-        mediaType: config.media_type,
-        feedKey,
-        minDiscount,
-        limit: bootstrapLimit,
-        now,
-        syncId,
-        existingDealsByAsin,
-      });
+        const bootstrap = await bootstrapFromExistingDeals({
+          mediaType: config.media_type,
+          feedKey,
+          minDiscount,
+          limit: bootstrapLimit,
+          now,
+          syncId,
+          existingDealsByAsin,
+        });
 
-      if (bootstrap.rows.length) {
-        for (const row of bootstrap.rows) {
-          if (seen.has(row.asin)) continue;
-          keep.push(row);
-          seen.add(row.asin);
-          stats.kept += 1;
+        if (bootstrap.rows.length) {
+          for (const row of bootstrap.rows) {
+            if (seen.has(row.asin)) continue;
+            keep.push(row);
+            seen.add(row.asin);
+            stats.kept += 1;
+          }
+        }
+
+        stats.bootstrap_from_existing = {
+          attempted_asins: bootstrap.attempted_asins,
+          kept: bootstrap.rows.length,
+          fallback_existing_discount_used: bootstrap.fallback_existing_discount_used,
+          errors: bootstrap.errors.length,
+        };
+
+        if (bootstrap.errors.length) {
+          errors.push(...bootstrap.errors);
         }
       }
-
-      stats.bootstrap_from_existing = {
-        attempted_asins: bootstrap.attempted_asins,
-        kept: bootstrap.rows.length,
-        fallback_existing_discount_used: bootstrap.fallback_existing_discount_used,
-        errors: bootstrap.errors.length,
-      };
-
-      if (bootstrap.errors.length) {
-        errors.push(...bootstrap.errors);
-      }
     }
+
+    stats.stopped_early_reason = stoppedEarlyReason;
+    stats.request_elapsed_ms = requestElapsedMs();
 
     keep.sort((a, b) => (a.sales_rank ?? 1e12) - (b.sales_rank ?? 1e12));
 

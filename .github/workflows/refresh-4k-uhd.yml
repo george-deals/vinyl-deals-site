@@ -47,21 +47,46 @@ jobs:
             revalidate_offset=$((revalidate_offset + REVALIDATE_LIMIT))
             sleep 1
           done
+          PER_RUN=10
+          TOTAL=40
+          MAXPAGES=1
+          BOOTSTRAP_LIMIT=80
+          REQUEST_BUDGET_MS=90000
+          fails=0
+          offset=0
 
-          URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=2&delayMs=0&moviesPerRun=25"
+          while [ $offset -lt $TOTAL ]; do
+            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}"
+            echo "Chunk offset=$offset size=$PER_RUN"
 
-          echo "URL: $URL"
+            ok=0
+            for i in 1 2; do
+              echo "Attempt $i..."
+              set +e
+              RESP=$(curl -sS --fail-with-body --max-time 120 "$URL")
+              CODE=$?
+              set -e
+              if [ $CODE -eq 0 ]; then
+                echo "$RESP"
+                ok=1
+                break
+              fi
+              echo "curl failed (code=$CODE). Sleeping..."
+              sleep $((10 * i))
+            done
 
-          for i in 1 2; do
-            echo "Attempt $i..."
-            set +e
-            RESP=$(curl -sS --fail-with-body --max-time 180 "$URL")
-            CODE=$?
-            set -e
-            if [ $CODE -eq 0 ]; then echo "$RESP"; exit 0; fi
-            echo "curl failed (code=$CODE). Sleeping..."
-            sleep $((10 * i))
+            if [ $ok -eq 0 ]; then
+              fails=$((fails + 1))
+              echo "Chunk failed after retries (offset=$offset)."
+            fi
+
+            offset=$((offset + PER_RUN))
+            sleep 2
           done
 
-          echo "Failed after retries."
-          exit 1
+          if [ $fails -gt 0 ]; then
+            echo "Completed with failures: $fails chunk(s) failed."
+            exit 1
+          fi
+
+          echo "Done."
