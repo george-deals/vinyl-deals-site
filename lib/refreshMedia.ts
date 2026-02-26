@@ -81,6 +81,18 @@ function toCents(n: any): number | null {
   return Number.isFinite(x) && x > 0 ? Math.round(x * 100) : null;
 }
 
+function parseDisplayAmountToCents(display: any): number | null {
+  if (typeof display !== "string") return null;
+  const cleaned = display.replace(/[^0-9.]/g, "");
+  if (!cleaned) return null;
+  const x = Number(cleaned);
+  return Number.isFinite(x) && x > 0 ? Math.round(x * 100) : null;
+}
+
+function toCentsFromPriceObj(price: any): number | null {
+  return toCents(price?.Amount) ?? parseDisplayAmountToCents(price?.DisplayAmount);
+}
+
 function computeDiscountPct(priceCents: number, listCents: number | null): number | null {
   if (!listCents || listCents <= priceCents) return null;
   return Math.round(((listCents - priceCents) / listCents) * 1000) / 10;
@@ -201,10 +213,10 @@ function pickBuyBoxListingOnly(item: any) {
   if (!listings.length) return null;
 
   const buyBox = listings.find((l) => l?.IsBuyBoxWinner);
-  const candidate = buyBox ?? listings.find((l) => toCents(l?.Price?.Amount));
+  const candidate = buyBox ?? listings.find((l) => toCentsFromPriceObj(l?.Price));
   if (!candidate) return null;
 
-  const priceCents = toCents(candidate?.Price?.Amount);
+  const priceCents = toCentsFromPriceObj(candidate?.Price);
   if (!priceCents) return null;
 
   return candidate;
@@ -226,9 +238,10 @@ function extractCurrentPricing(item: any): CurrentPricing {
   const listing = pickBuyBoxListingOnly(item);
   const summary = pickOfferSummary(item);
 
-  const summaryLow = toCents(summary?.LowestPrice?.Amount);
-  const summaryHigh = toCents(summary?.HighestPrice?.Amount);
+  const summaryLow = toCentsFromPriceObj(summary?.LowestPrice);
+  const summaryHigh = toCentsFromPriceObj(summary?.HighestPrice);
   const summaryCurrency = summary?.LowestPrice?.Currency ?? summary?.HighestPrice?.Currency ?? null;
+  const listFromProductInfo = toCents(item?.ItemInfo?.ProductInfo?.ListPrice?.Amount);
 
   if (!listing && summaryLow == null) {
     return {
@@ -240,7 +253,7 @@ function extractCurrentPricing(item: any): CurrentPricing {
     };
   }
 
-  const priceCents = toCents(listing?.Price?.Amount) ?? summaryLow;
+  const priceCents = toCentsFromPriceObj(listing?.Price) ?? summaryLow;
   if (priceCents == null) {
     return {
       priceCents: null,
@@ -251,9 +264,10 @@ function extractCurrentPricing(item: any): CurrentPricing {
     };
   }
 
-  const listFromBasis = toCents(listing?.SavingBasis?.Amount) ?? toCents(listing?.ListPrice?.Amount);
+  const listFromBasis =
+    toCentsFromPriceObj(listing?.SavingBasis) ?? toCentsFromPriceObj(listing?.ListPrice) ?? listFromProductInfo;
   const savingsPct = Number(listing?.Price?.Savings?.Percentage);
-  const savingsAmt = toCents(listing?.Price?.Savings?.Amount);
+  const savingsAmt = toCentsFromPriceObj(listing?.Price?.Savings);
 
   const listCents =
     listFromBasis ??
@@ -374,6 +388,7 @@ async function paapiSearch({
       "ItemInfo.Title",
       "ItemInfo.ByLineInfo",
       "ItemInfo.Classifications",
+      "ItemInfo.ProductInfo",
       "Images.Primary.Large",
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
@@ -424,6 +439,7 @@ async function paapiGetItems(asins: string[]) {
     Resources: [
       "ItemInfo.Title",
       "ItemInfo.Classifications",
+      "ItemInfo.ProductInfo",
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
       "Offers.Listings.IsBuyBoxWinner",
@@ -625,7 +641,7 @@ async function revalidateActiveDeals(opts: {
       }
 
       const pricing = extractCurrentPricing(item);
-      const priceCents = pricing.priceCents ?? existing.price_cents;
+      const priceCents = pricing.priceCents;
       const listCents = pricing.listCents ?? existing.list_price_cents;
       const currency = pricing.currency ?? existing.currency;
 
@@ -747,7 +763,7 @@ async function bootstrapFromExistingDeals(opts: {
       if (!itemMatchesMediaType(opts.mediaType, item, existing.title)) continue;
 
       const pricing = extractCurrentPricing(item);
-      const priceCents = pricing.priceCents ?? existing.price_cents;
+      const priceCents = pricing.priceCents;
       if (priceCents == null) continue;
 
       const listCents = pricing.listCents ?? existing.list_price_cents;
@@ -1000,7 +1016,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
           const existing = existingDealsByAsin.get(String(asin));
           const pricing = extractCurrentPricing(item);
-          const priceCents = pricing.priceCents ?? existing?.price_cents ?? null;
+          const priceCents = pricing.priceCents;
 
           if (priceCents == null) continue;
 
