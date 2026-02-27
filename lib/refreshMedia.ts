@@ -241,7 +241,7 @@ function extractCurrentPricing(item: any): CurrentPricing {
   const summaryLow = toCentsFromPriceObj(summary?.LowestPrice);
   const summaryHigh = toCentsFromPriceObj(summary?.HighestPrice);
   const summaryCurrency = summary?.LowestPrice?.Currency ?? summary?.HighestPrice?.Currency ?? null;
-  const listFromProductInfo = toCents(item?.ItemInfo?.ProductInfo?.ListPrice?.Amount);
+  const listFromProductInfo = toCentsFromPriceObj(item?.ItemInfo?.ProductInfo?.ListPrice);
 
   if (!listing && summaryLow == null) {
     return {
