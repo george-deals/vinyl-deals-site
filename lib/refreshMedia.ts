@@ -1076,7 +1076,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
         const candidateAsins: string[] = [];
         const searchItemByAsin = new Map<string, any>();
         const pricingByAsin = new Map<string, CurrentPricing>();
-        const missingPricingAsins: string[] = [];
+        const asinsForGetItems: string[] = [];
 
         for (const item of items) {
           const asin = item?.ASIN ? String(item.ASIN) : "";
@@ -1092,14 +1092,14 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
           const pricing = extractCurrentPricing(item);
           pricingByAsin.set(asin, pricing);
-          if (pricing.priceCents == null) missingPricingAsins.push(asin);
+          if (mode === "discount" || pricing.priceCents == null) asinsForGetItems.push(asin);
         }
 
         let refetchedWithGetItems = 0;
-        if (missingPricingAsins.length) {
+        if (asinsForGetItems.length) {
           const pricingChunks: string[][] = [];
-          for (let i = 0; i < missingPricingAsins.length; i += ITEM_COUNT) {
-            pricingChunks.push(missingPricingAsins.slice(i, i + ITEM_COUNT));
+          for (let i = 0; i < asinsForGetItems.length; i += ITEM_COUNT) {
+            pricingChunks.push(asinsForGetItems.slice(i, i + ITEM_COUNT));
           }
 
           for (const chunk of pricingChunks) {
