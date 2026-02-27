@@ -942,6 +942,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     fallback_existing_list_used: 0,
     fallback_existing_discount_used: 0,
     fallback_history_baseline_used: 0,
+    pricing_refetched_getitems: 0,
     kept: 0,
     db_sync_rows_after_upsert: null as number | null,
     db_feedkey_integrity_warning: null as string | null,
@@ -1072,17 +1073,90 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           });
         }
 
+        const candidateAsins: string[] = [];
+        const searchItemByAsin = new Map<string, any>();
+        const pricingByAsin = new Map<string, CurrentPricing>();
+        const missingPricingAsins: string[] = [];
+
         for (const item of items) {
-          const asin = item?.ASIN;
-          if (!asin || seen.has(asin)) continue;
+          const asin = item?.ASIN ? String(item.ASIN) : "";
+          if (!asin || seen.has(asin) || searchItemByAsin.has(asin)) continue;
 
           if (!itemMatchesMediaType(config.media_type, item)) {
             stats.filtered_wrong_media += 1;
             continue;
           }
 
-          const existing = existingDealsByAsin.get(String(asin));
+          candidateAsins.push(asin);
+          searchItemByAsin.set(asin, item);
+
           const pricing = extractCurrentPricing(item);
+          pricingByAsin.set(asin, pricing);
+          if (pricing.priceCents == null) missingPricingAsins.push(asin);
+        }
+
+        let refetchedWithGetItems = 0;
+        if (missingPricingAsins.length) {
+          const pricingChunks: string[][] = [];
+          for (let i = 0; i < missingPricingAsins.length; i += ITEM_COUNT) {
+            pricingChunks.push(missingPricingAsins.slice(i, i + ITEM_COUNT));
+          }
+
+          for (const chunk of pricingChunks) {
+            if (budgetExceeded()) {
+              stoppedEarlyReason = "request_budget_exceeded_during_getitems_pricing";
+              break;
+            }
+
+            let fullItems: any[] = [];
+            try {
+              fullItems = await withRetry(() => paapiGetItems(chunk));
+            } catch (e: any) {
+              errors.push({ asins: chunk, error: extractAxiosError(e) });
+              continue;
+            }
+
+            const fullByAsin = new Map<string, any>();
+            for (const full of fullItems ?? []) {
+              if (full?.ASIN) fullByAsin.set(String(full.ASIN), full);
+            }
+
+            for (const asin of chunk) {
+              const full = fullByAsin.get(asin);
+              if (!full) continue;
+
+              const fullPricing = extractCurrentPricing(full);
+              if (fullPricing.priceCents != null) {
+                pricingByAsin.set(asin, fullPricing);
+                refetchedWithGetItems += 1;
+              }
+
+              const searchItem = searchItemByAsin.get(asin);
+              if (searchItem) {
+                searchItemByAsin.set(asin, {
+                  ...searchItem,
+                  ...full,
+                  ItemInfo: { ...(searchItem?.ItemInfo ?? {}), ...(full?.ItemInfo ?? {}) },
+                  Images: full?.Images ?? searchItem?.Images,
+                  BrowseNodeInfo: searchItem?.BrowseNodeInfo ?? full?.BrowseNodeInfo,
+                });
+              } else {
+                searchItemByAsin.set(asin, full);
+              }
+            }
+          }
+        }
+
+        if (refetchedWithGetItems > 0) {
+          stats.pricing_refetched_getitems = (stats.pricing_refetched_getitems ?? 0) + refetchedWithGetItems;
+        }
+
+        for (const asin of candidateAsins) {
+          const item = searchItemByAsin.get(asin);
+          if (!item) continue;
+
+          const existing = existingDealsByAsin.get(asin);
+          const pricing = pricingByAsin.get(asin) ?? extractCurrentPricing(item);
           const priceCents = pricing.priceCents;
 
           if (priceCents == null) continue;
@@ -1090,7 +1164,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           let listCents = pricing.listCents ?? existing?.list_price_cents ?? null;
           let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
 
-          const historyBaseline = historyBaselineByAsin.get(String(asin)) ?? null;
+          const historyBaseline = historyBaselineByAsin.get(asin) ?? null;
           if (discountPct == null && historyBaseline != null && historyBaseline > priceCents) {
             const historyDiscount = computeDiscountPct(priceCents, historyBaseline);
             if (historyDiscount != null) {
@@ -1139,7 +1213,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             title: item?.ItemInfo?.Title?.DisplayValue ?? existing?.title ?? asin,
             artist,
             image_url: item?.Images?.Primary?.Large?.URL ?? existing?.image_url ?? null,
-            amazon_url: `https://www.amazon.com/dp/${asin}?tag=${process.env.AMAZON_PARTNER_TAG}`,
+            amazon_url: "https://www.amazon.com/dp/" + asin + "?tag=" + process.env.AMAZON_PARTNER_TAG,
             price_cents: priceCents,
             list_price_cents: listCents,
             currency: pricing.currency ?? existing?.currency ?? null,
