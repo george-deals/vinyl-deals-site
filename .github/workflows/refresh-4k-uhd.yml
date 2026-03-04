@@ -12,7 +12,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - name: Refresh 4k-uhd
         env:
@@ -31,83 +31,49 @@ jobs:
           echo "Refreshing: $TYPE"
           echo "BASE: $BASE"
 
-          echo "Revalidating active $TYPE deals..."
-          REVALIDATE_LIMIT=40
-          REVALIDATE_TOTAL=0
-          revalidate_offset=0
-          revalidate_calls=0
-          revalidate_success=0
-
-          while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
-            revalidate_calls=$((revalidate_calls + 1))
-            revalidate_url="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&revalidateOnly=1&activeIncludeAll=0&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}"
-            echo "Revalidate offset=$revalidate_offset limit=$REVALIDATE_LIMIT"
-
-            ok=0
-            for i in 1 2; do
-              set +e
-              RESP=$(curl -sS --fail-with-body \
-                --connect-timeout 20 \
-                --max-time 120 \
-                "$revalidate_url")
-              CODE=$?
-              set -e
-              if [ $CODE -eq 0 ]; then
-                echo "$RESP"
-                ok=1
-                revalidate_success=$((revalidate_success + 1))
-                break
-              fi
-              echo "Revalidate call failed (code=$CODE, attempt=$i). Sleeping..."
-              sleep $((8 * i))
-            done
-
-            if [ $ok -eq 0 ]; then
-              echo "WARNING: revalidate chunk failed (offset=$revalidate_offset)."
-            fi
-
-            revalidate_offset=$((revalidate_offset + REVALIDATE_LIMIT))
-            sleep 1
-          done
-
-          if [ $REVALIDATE_TOTAL -gt 0 ] && [ $revalidate_success -eq 0 ]; then
-            echo "WARNING: all 4k revalidate calls failed; continuing to discovery."
-          fi
-
+          # 4K debug mode: discovery only (revalidation disabled while we stabilize runtime)
           PER_RUN=4
-          TOTAL=60
+          TOTAL=36
           MAXPAGES=1
-          BOOTSTRAP_LIMIT=120
-          REQUEST_BUDGET_MS=50000
+          BOOTSTRAP_LIMIT=20
+          REQUEST_BUDGET_MS=25000
+          BOOTSTRAP_RESERVE_MS=8000
+          CURL_MAX_TIME=75
+          MAX_ATTEMPTS=1
+
           fails=0
           successes=0
           chunks=0
           offset=0
 
           while [ $offset -lt $TOTAL ]; do
-            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}&bootstrapReserveMs=15000&historyLookbackDays=365"
+            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}&bootstrapReserveMs=${BOOTSTRAP_RESERVE_MS}&historyLookbackDays=365"
             echo "Chunk offset=$offset size=$PER_RUN"
 
             ok=0
-            for i in 1 2; do
-              echo "Attempt $i..."
+            attempt=1
+            while [ $attempt -le $MAX_ATTEMPTS ]; do
+              echo "Attempt $attempt/$MAX_ATTEMPTS..."
               set +e
-              RESP=$(curl -sS --fail-with-body --max-time 120 "$URL")
+              RESP=$(curl -sS --fail-with-body --connect-timeout 15 --max-time ${CURL_MAX_TIME} "$URL")
               CODE=$?
               set -e
+
               if [ $CODE -eq 0 ]; then
                 echo "$RESP"
                 ok=1
                 break
               fi
-              echo "curl failed (code=$CODE). Sleeping..."
-              sleep $((10 * i))
+
+              echo "curl failed (code=$CODE)."
+              attempt=$((attempt + 1))
+              sleep 2
             done
 
             chunks=$((chunks + 1))
             if [ $ok -eq 0 ]; then
               fails=$((fails + 1))
-              echo "Chunk failed after retries (offset=$offset)."
+              echo "Chunk failed (offset=$offset)."
             else
               successes=$((successes + 1))
             fi
