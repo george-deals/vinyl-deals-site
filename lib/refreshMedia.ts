@@ -781,7 +781,6 @@ async function revalidateActiveDeals(opts: {
       items = await withRetry(() => paapiGetItems(chunk));
     } catch (e: any) {
       errorsOut.push({ asins: chunk, error: extractAxiosError(e) });
-      continue;
     }
 
     const itemByAsin = new Map<string, any>();
@@ -974,6 +973,7 @@ async function bootstrapFromExistingDeals(opts: {
   const errorsOut: any[] = [];
   let fallbackExistingDiscountUsed = 0;
   let fallbackHistoryBaselineUsed = 0;
+  let fallbackWithoutLiveItem = 0;
 
   for (const chunk of chunks) {
     let items: any[] = [];
@@ -981,7 +981,6 @@ async function bootstrapFromExistingDeals(opts: {
       items = await withRetry(() => paapiGetItems(chunk));
     } catch (e: any) {
       errorsOut.push({ asins: chunk, error: extractAxiosError(e) });
-      continue;
     }
 
     const itemByAsin = new Map<string, any>();
@@ -1009,10 +1008,18 @@ async function bootstrapFromExistingDeals(opts: {
       if (!existing) continue;
 
       const item = itemByAsin.get(asin);
-      if (!item) continue;
-      if (!itemMatchesMediaType(opts.mediaType, item, existing.title)) continue;
+      if (item && !itemMatchesMediaType(opts.mediaType, item, existing.title)) continue;
+      if (!item) fallbackWithoutLiveItem += 1;
 
-      const pricing = extractCurrentPricing(item);
+      const pricing = item
+        ? extractCurrentPricing(item)
+        : {
+            priceCents: null,
+            listCents: null,
+            currency: null,
+            discountPct: null,
+            hadDiscountSignal: false,
+          };
       let priceCents = pricing.priceCents;
       let listCents = pricing.listCents ?? existing.list_price_cents;
       let currency = pricing.currency ?? existing.currency ?? null;
@@ -1070,7 +1077,7 @@ async function bootstrapFromExistingDeals(opts: {
         asin,
         title: item?.ItemInfo?.Title?.DisplayValue ?? existing.title ?? asin,
         artist: existing.artist ?? null,
-        image_url: existing.image_url ?? null,
+        image_url: item?.Images?.Primary?.Large?.URL ?? existing.image_url ?? null,
         amazon_url: buildAmazonUrl(asin),
         price_cents: priceCents,
         list_price_cents: listCents,
@@ -1094,6 +1101,7 @@ async function bootstrapFromExistingDeals(opts: {
     rows,
     fallback_existing_discount_used: fallbackExistingDiscountUsed,
     fallback_history_baseline_used: fallbackHistoryBaselineUsed,
+    fallback_without_live_item: fallbackWithoutLiveItem,
     errors: errorsOut,
   };
 }
@@ -1172,6 +1180,7 @@ async function bootstrapFromTrackedAsins(opts: {
   const errorsOut: any[] = [];
   let fallbackExistingDiscountUsed = 0;
   let fallbackHistoryBaselineUsed = 0;
+  let fallbackWithoutLiveItem = 0;
 
   for (const chunk of chunks) {
     let items: any[] = [];
@@ -1179,7 +1188,6 @@ async function bootstrapFromTrackedAsins(opts: {
       items = await withRetry(() => paapiGetItems(chunk));
     } catch (e: any) {
       errorsOut.push({ asins: chunk, error: extractAxiosError(e) });
-      continue;
     }
 
     const itemByAsin = new Map<string, any>();
@@ -1207,12 +1215,20 @@ async function bootstrapFromTrackedAsins(opts: {
       if (!tracked) continue;
 
       const item = itemByAsin.get(asin);
-      if (!item) continue;
 
       const existing = opts.existingDealsByAsin.get(asin);
-      if (!itemMatchesMediaType(opts.mediaType, item, tracked.title ?? existing?.title ?? null)) continue;
+      if (item && !itemMatchesMediaType(opts.mediaType, item, tracked.title ?? existing?.title ?? null)) continue;
+      if (!item) fallbackWithoutLiveItem += 1;
 
-      const pricing = extractCurrentPricing(item);
+      const pricing = item
+        ? extractCurrentPricing(item)
+        : {
+            priceCents: null,
+            listCents: null,
+            currency: null,
+            discountPct: null,
+            hadDiscountSignal: false,
+          };
       let priceCents = pricing.priceCents;
       let listCents = pricing.listCents ?? existing?.list_price_cents ?? null;
       let currency = pricing.currency ?? existing?.currency ?? null;
@@ -1259,7 +1275,7 @@ async function bootstrapFromTrackedAsins(opts: {
         asin,
         title: item?.ItemInfo?.Title?.DisplayValue ?? tracked.title ?? existing?.title ?? asin,
         artist: extractArtist(item) ?? tracked.artist ?? existing?.artist ?? null,
-        image_url: tracked.image_url ?? existing?.image_url ?? null,
+        image_url: item?.Images?.Primary?.Large?.URL ?? tracked.image_url ?? existing?.image_url ?? null,
         amazon_url: tracked.amazon_url ?? buildAmazonUrl(asin),
         price_cents: priceCents,
         list_price_cents: listCents,
@@ -1283,6 +1299,7 @@ async function bootstrapFromTrackedAsins(opts: {
     rows,
     fallback_existing_discount_used: fallbackExistingDiscountUsed,
     fallback_history_baseline_used: fallbackHistoryBaselineUsed,
+    fallback_without_live_item: fallbackWithoutLiveItem,
     errors: errorsOut,
   };
 }
