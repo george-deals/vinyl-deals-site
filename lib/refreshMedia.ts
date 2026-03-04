@@ -1586,6 +1586,92 @@ async function bootstrapFromExistingHistoryOnly(opts: {
   };
 }
 
+async function bootstrapFromBucketedDeals(opts: {
+  mediaType: MediaConfig["media_type"];
+  feedKey: string;
+  minDiscount: number;
+  limit: number;
+  offset: number;
+  now: string;
+  syncId: string;
+  existingDealsByAsin: Map<string, ExistingDealSnapshot>;
+  supabase: any;
+}) {
+  const { data, error } = await opts.supabase
+    .from("deals_bucketed")
+    .select(
+      "asin,title,image_url,price_cents,list_price_cents,currency,discount_pct,sales_rank,browse_node_id,updated_at"
+    )
+    .eq("media_type", opts.mediaType)
+    .gte("discount_pct", opts.minDiscount)
+    .order("updated_at", { ascending: false })
+    .range(opts.offset, opts.offset + opts.limit - 1);
+
+  if (error) throw new Error(error.message);
+
+  const rows: DealRow[] = [];
+  const seen = new Set<string>();
+
+  for (const row of data ?? []) {
+    const asin = row?.asin ? String(row.asin) : "";
+    if (!asin || seen.has(asin)) continue;
+    seen.add(asin);
+
+    const existing = opts.existingDealsByAsin.get(asin);
+
+    const rawPrice = Number(row?.price_cents);
+    if (!Number.isFinite(rawPrice) || rawPrice <= 0) continue;
+    const priceCents = Math.round(rawPrice);
+
+    const rawList = Number(row?.list_price_cents);
+    const listFromBucketed = Number.isFinite(rawList) && rawList > 0 ? Math.round(rawList) : null;
+    const listFromExisting =
+      existing?.list_price_cents != null && Number(existing.list_price_cents) > 0
+        ? Math.round(Number(existing.list_price_cents))
+        : null;
+    let listCents = listFromBucketed ?? listFromExisting ?? null;
+
+    let discountPct: number | null = Number(row?.discount_pct);
+    if (!Number.isFinite(discountPct)) discountPct = null;
+    if (discountPct == null) discountPct = computeDiscountPct(priceCents, listCents);
+
+    if (discountPct == null || !Number.isFinite(discountPct) || discountPct < opts.minDiscount) continue;
+
+    if (listCents != null && listCents <= priceCents) {
+      listCents = null;
+    }
+
+    const rankRaw = Number(row?.sales_rank);
+    const browseNodeRaw = Number(row?.browse_node_id);
+
+    rows.push({
+      asin,
+      title: row?.title ?? existing?.title ?? asin,
+      artist: existing?.artist ?? null,
+      image_url: row?.image_url ?? existing?.image_url ?? null,
+      amazon_url: buildAmazonUrl(asin),
+      price_cents: priceCents,
+      list_price_cents: listCents,
+      currency: row?.currency ?? existing?.currency ?? null,
+      discount_pct: Math.round(discountPct * 10) / 10,
+      category: "media",
+      media_type: opts.mediaType,
+      feed_key: opts.feedKey,
+      sales_rank: Number.isFinite(rankRaw) ? Math.round(rankRaw) : null,
+      genre: null,
+      browse_node_id: Number.isFinite(browseNodeRaw) ? Math.round(browseNodeRaw) : null,
+      updated_at: opts.now,
+      last_seen_at: opts.now,
+      sync_id: opts.syncId,
+    });
+  }
+
+  return {
+    attempted_rows: (data ?? []).length,
+    rows,
+  };
+}
+
 export async function refreshMedia(req: Request, config: MediaConfig) {
   const url = new URL(req.url);
   const token = url.searchParams.get("token");
@@ -1715,6 +1801,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     active_include_all: activeIncludeAll,
     bootstrap_from_existing: null as any,
     bootstrap_from_tracked: null as any,
+    bootstrap_from_bucketed: null as any,
   };
 
   const supabase = getSupabaseAdmin();
@@ -2244,6 +2331,49 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             reason: "existing_bootstrap_returned_rows",
           };
         }
+      }
+    }
+
+    if (mode === "discount" && keep.length === 0 && config.media_type === "4k-uhd") {
+      try {
+        const bucketedBootstrap = await bootstrapFromBucketedDeals({
+          mediaType: config.media_type,
+          feedKey,
+          minDiscount,
+          limit: bootstrapLimit,
+          offset: bootstrapOffset,
+          now,
+          syncId,
+          existingDealsByAsin,
+          supabase,
+        });
+
+        let keptFromBucketed = 0;
+        if (bucketedBootstrap.rows.length) {
+          for (const row of bucketedBootstrap.rows) {
+            if (seen.has(row.asin)) continue;
+            keep.push(row);
+            seen.add(row.asin);
+            stats.kept += 1;
+            stats.fallback_bucketed_price_used += 1;
+            if (row.discount_pct != null) stats.fallback_bucketed_discount_used += 1;
+            keptFromBucketed += 1;
+          }
+        }
+
+        stats.bootstrap_from_bucketed = {
+          attempted_rows: bucketedBootstrap.attempted_rows,
+          rows_returned: bucketedBootstrap.rows.length,
+          kept: keptFromBucketed,
+          offset: bootstrapOffset,
+          limit: bootstrapLimit,
+          reason: "bucketed_recovery_after_empty_discovery",
+        };
+      } catch (e: any) {
+        stats.bootstrap_from_bucketed = {
+          ok: false,
+          error: e?.message ?? String(e),
+        };
       }
     }
 
