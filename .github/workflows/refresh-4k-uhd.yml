@@ -33,7 +33,7 @@ jobs:
 
           echo "Revalidating active $TYPE deals..."
           REVALIDATE_LIMIT=40
-          REVALIDATE_TOTAL=40
+          REVALIDATE_TOTAL=0
           revalidate_offset=0
           revalidate_calls=0
           revalidate_success=0
@@ -70,16 +70,18 @@ jobs:
             sleep 1
           done
 
-          if [ $revalidate_success -eq 0 ]; then
+          if [ $REVALIDATE_TOTAL -gt 0 ] && [ $revalidate_success -eq 0 ]; then
             echo "WARNING: all 4k revalidate calls failed; continuing to discovery."
           fi
 
           PER_RUN=4
-          TOTAL=40
+          TOTAL=60
           MAXPAGES=1
           BOOTSTRAP_LIMIT=120
           REQUEST_BUDGET_MS=50000
           fails=0
+          successes=0
+          chunks=0
           offset=0
 
           while [ $offset -lt $TOTAL ]; do
@@ -102,18 +104,25 @@ jobs:
               sleep $((10 * i))
             done
 
+            chunks=$((chunks + 1))
             if [ $ok -eq 0 ]; then
               fails=$((fails + 1))
               echo "Chunk failed after retries (offset=$offset)."
+            else
+              successes=$((successes + 1))
             fi
 
             offset=$((offset + PER_RUN))
-            sleep 2
+            sleep 1
           done
 
-          if [ $fails -gt 0 ]; then
-            echo "Completed with failures: $fails chunk(s) failed."
+          if [ $successes -eq 0 ]; then
+            echo "ERROR: all discovery chunks failed"
             exit 1
+          fi
+
+          if [ $fails -gt 0 ]; then
+            echo "Completed with partial failures: $fails of $chunks chunk(s) failed."
           fi
 
           echo "Done."
