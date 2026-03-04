@@ -18,6 +18,10 @@ function uniqClean(list: string[]): string[] {
   return Array.from(new Set(list.map((s) => (s || "").trim()).filter(Boolean)));
 }
 
+function normalizeKeywordText(input: string): string {
+  return input.replace(/["']/g, " ").replace(/\s+/g, " ").trim();
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
@@ -37,7 +41,10 @@ export async function GET(req: Request) {
     movieBatch = rotateSlice(moviesAll, perRun, hourSeed);
   }
 
-  const movieKeywords = movieBatch.map((t) => `"${String(t).replace(/"/g, "").trim()}" 4k uhd`);
+  const movieKeywords = movieBatch
+    .map((t) => normalizeKeywordText(String(t)))
+    .filter(Boolean)
+    .flatMap((title) => [`${title} 4k`, `${title} ultra hd`]);
   const maxKeywords = 80;
   const keywords = uniqClean([...CORE_KEYWORDS, ...movieKeywords]).slice(0, maxKeywords);
 

@@ -33,7 +33,7 @@ jobs:
 
           echo "Revalidating active $TYPE deals..."
           REVALIDATE_LIMIT=60
-          REVALIDATE_TOTAL=360
+          REVALIDATE_TOTAL=300
           revalidate_offset=0
           revalidate_calls=0
           revalidate_success=0
@@ -75,16 +75,16 @@ jobs:
             exit 1
           fi
 
-          PER_RUN=10
-          TOTAL=0
-          MAXPAGES=1
-          BOOTSTRAP_LIMIT=80
-          REQUEST_BUDGET_MS=70000
+          PER_RUN=12
+          TOTAL=120
+          MAXPAGES=2
+          BOOTSTRAP_LIMIT=160
+          REQUEST_BUDGET_MS=120000
           fails=0
           offset=0
 
           while [ $offset -lt $TOTAL ]; do
-            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}&bootstrapReserveMs=25000"
+            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}&bootstrapReserveMs=40000&historyLookbackDays=365"
             echo "Chunk offset=$offset size=$PER_RUN"
 
             ok=0
