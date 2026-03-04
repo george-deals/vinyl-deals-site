@@ -23,9 +23,44 @@ jobs:
             BASE="https://www.mediadealshub.com"
           fi
 
+          fails=0
+
           for TYPE in 4k-uhd blu-ray dvd; do
-            URL="$BASE/api/discover-movie-asins?token=$TOKEN&media_type=${TYPE}&moviesPerRun=120&maxPages=1&delayMs=0"
+            case "$TYPE" in
+              4k-uhd) PER_RUN=20 ;;
+              blu-ray) PER_RUN=30 ;;
+              dvd) PER_RUN=30 ;;
+            esac
+
+            URL="$BASE/api/discover-movie-asins?token=$TOKEN&media_type=${TYPE}&moviesPerRun=${PER_RUN}&maxPages=1&delayMs=0&requestBudgetMs=150000"
             echo "Discover URL ($TYPE): $URL"
-            curl -sS --fail --max-time 240 "$URL"
+
+            ok=0
+            for attempt in 1 2; do
+              set +e
+              RESP=$(curl -sS --fail-with-body --max-time 200 "$URL")
+              CODE=$?
+              set -e
+
+              if [ $CODE -eq 0 ]; then
+                echo "$RESP"
+                ok=1
+                break
+              fi
+
+              echo "Discover call failed for $TYPE (attempt $attempt, code=$CODE)."
+              sleep $((attempt * 8))
+            done
+
+            if [ $ok -ne 1 ]; then
+              fails=$((fails + 1))
+              echo "WARNING: discover failed for $TYPE"
+            fi
+
             sleep 2
           done
+
+          if [ $fails -gt 0 ]; then
+            echo "Completed with failures: $fails type(s) failed."
+            exit 1
+          fi
