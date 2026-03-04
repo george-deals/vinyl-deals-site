@@ -1579,6 +1579,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     filtered_over_max_price: 0,
     filtered_wrong_media: 0,
     fallback_existing_list_used: 0,
+    fallback_existing_price_used: 0,
     fallback_existing_discount_used: 0,
     fallback_history_baseline_used: 0,
     fallback_history_price_used: 0,
@@ -1827,6 +1828,11 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           if (priceCents == null && historyLatest) {
             priceCents = historyLatest.price_cents;
             stats.fallback_history_price_used += 1;
+          }
+
+          if (priceCents == null && existing?.price_cents != null) {
+            priceCents = existing.price_cents;
+            stats.fallback_existing_price_used += 1;
           }
 
           if (priceCents == null) continue;
