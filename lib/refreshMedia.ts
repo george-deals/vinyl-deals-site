@@ -659,6 +659,72 @@ async function loadRecentPriceBaselines(opts: {
   return out;
 }
 
+async function loadBucketedSnapshots(opts: {
+  supabase: any;
+  asins: string[];
+  mediaType: MediaConfig["media_type"];
+}) {
+  const uniqAsins = Array.from(new Set((opts.asins ?? []).filter(Boolean)));
+  if (!uniqAsins.length) {
+    return new Map<
+      string,
+      {
+        price_cents: number | null;
+        list_price_cents: number | null;
+        currency: string | null;
+        discount_pct: number | null;
+        title: string | null;
+        image_url: string | null;
+      }
+    >();
+  }
+
+  const out = new Map<
+    string,
+    {
+      price_cents: number | null;
+      list_price_cents: number | null;
+      currency: string | null;
+      discount_pct: number | null;
+      title: string | null;
+      image_url: string | null;
+    }
+  >();
+
+  const CHUNK = 150;
+  for (let i = 0; i < uniqAsins.length; i += CHUNK) {
+    const chunk = uniqAsins.slice(i, i + CHUNK);
+    const { data, error } = await opts.supabase
+      .from("deals_bucketed")
+      .select("asin,title,image_url,price_cents,list_price_cents,currency,discount_pct,updated_at")
+      .eq("media_type", opts.mediaType)
+      .in("asin", chunk)
+      .order("updated_at", { ascending: false });
+
+    if (error) continue;
+
+    for (const row of data ?? []) {
+      const asin = row?.asin ? String(row.asin) : "";
+      if (!asin || out.has(asin)) continue;
+
+      const price = Number(row?.price_cents);
+      const list = Number(row?.list_price_cents);
+      const discount = Number(row?.discount_pct);
+
+      out.set(asin, {
+        price_cents: Number.isFinite(price) && price > 0 ? Math.round(price) : null,
+        list_price_cents: Number.isFinite(list) && list > 0 ? Math.round(list) : null,
+        currency: row?.currency ? String(row.currency) : null,
+        discount_pct: Number.isFinite(discount) ? discount : null,
+        title: row?.title ? String(row.title) : null,
+        image_url: row?.image_url ? String(row.image_url) : null,
+      });
+    }
+  }
+
+  return out;
+}
+
 async function loadLatestPriceSnapshots(opts: {
   supabase: any;
   asins: string[];
@@ -1416,26 +1482,53 @@ async function bootstrapFromExistingHistoryOnly(opts: {
     includeAllTimeFallback: true,
   });
 
+  const bucketedByAsin =
+    opts.mediaType === "4k-uhd"
+      ? await loadBucketedSnapshots({
+          supabase: opts.supabase,
+          asins,
+          mediaType: opts.mediaType,
+        })
+      : new Map<string, {
+          price_cents: number | null;
+          list_price_cents: number | null;
+          currency: string | null;
+          discount_pct: number | null;
+          title: string | null;
+          image_url: string | null;
+        }>();
+
   const rows: DealRow[] = [];
   let fallbackHistoryRowsUsed = 0;
+  let fallbackBucketedRowsUsed = 0;
 
   for (const asin of asins) {
     const existing = opts.existingDealsByAsin.get(asin);
     if (!existing) continue;
 
     const historyLatest = historyLatestByAsin.get(asin);
-    if (!historyLatest) continue;
+    const bucketed = bucketedByAsin.get(asin);
 
-    const priceCents = historyLatest.price_cents;
+    const rawPriceCents =
+      historyLatest?.price_cents ??
+      (existing.price_cents != null ? Number(existing.price_cents) : null) ??
+      (bucketed?.price_cents ?? null);
+    if (rawPriceCents == null) continue;
+    if (!Number.isFinite(rawPriceCents) || rawPriceCents <= 0) continue;
+    const priceCents = Math.round(Number(rawPriceCents));
+
     const baselineCandidates = [
       Number(existing.list_price_cents ?? 0),
       Number(existing.price_cents ?? 0),
-      Number(historyLatest.list_price_cents ?? 0),
+      Number(historyLatest?.list_price_cents ?? 0),
       Number(historyBaselineByAsin.get(asin) ?? 0),
+      Number(bucketed?.list_price_cents ?? 0),
+      Number(bucketed?.price_cents ?? 0),
     ];
 
-    const listCents = Math.max(...baselineCandidates.filter((v) => Number.isFinite(v) && v > 0));
-    if (!Number.isFinite(listCents) || listCents <= priceCents) continue;
+    const rawListCents = Math.max(...baselineCandidates.filter((v) => Number.isFinite(v) && v > 0));
+    if (!Number.isFinite(rawListCents) || rawListCents <= priceCents) continue;
+    const listCents = Math.round(rawListCents);
 
     let discountPct = computeDiscountPct(priceCents, listCents);
     if (
@@ -1448,17 +1541,28 @@ async function bootstrapFromExistingHistoryOnly(opts: {
       discountPct = existing.discount_pct;
     }
 
+    if (
+      discountPct == null &&
+      bucketed?.discount_pct != null &&
+      bucketed.discount_pct >= opts.minDiscount &&
+      bucketed.price_cents != null &&
+      priceCents <= bucketed.price_cents
+    ) {
+      discountPct = bucketed.discount_pct;
+      fallbackBucketedRowsUsed += 1;
+    }
+
     if (discountPct == null || discountPct < opts.minDiscount) continue;
 
     rows.push({
       asin,
-      title: existing.title ?? asin,
+      title: existing.title ?? bucketed?.title ?? asin,
       artist: existing.artist ?? null,
-      image_url: existing.image_url ?? null,
+      image_url: existing.image_url ?? bucketed?.image_url ?? null,
       amazon_url: buildAmazonUrl(asin),
       price_cents: priceCents,
       list_price_cents: listCents,
-      currency: historyLatest.currency ?? existing.currency ?? null,
+      currency: historyLatest?.currency ?? existing.currency ?? bucketed?.currency ?? null,
       discount_pct: discountPct,
       category: "media",
       media_type: opts.mediaType,
@@ -1478,6 +1582,7 @@ async function bootstrapFromExistingHistoryOnly(opts: {
     attempted_asins: asins.length,
     rows,
     fallback_history_rows_used: fallbackHistoryRowsUsed,
+    fallback_bucketed_rows_used: fallbackBucketedRowsUsed,
   };
 }
 
@@ -1992,6 +2097,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           rows_returned: historyBootstrap.rows.length,
           fallback_history_rows_used: historyBootstrap.fallback_history_rows_used,
           reason: "history_only_after_budget_exceeded",
+          fallback_bucketed_rows_used: historyBootstrap.fallback_bucketed_rows_used,
         };
 
         stats.bootstrap_from_tracked = {
