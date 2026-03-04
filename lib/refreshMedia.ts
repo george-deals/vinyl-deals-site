@@ -1304,6 +1304,120 @@ async function bootstrapFromTrackedAsins(opts: {
   };
 }
 
+async function bootstrapFromExistingHistoryOnly(opts: {
+  mediaType: MediaConfig["media_type"];
+  feedKey: string;
+  minDiscount: number;
+  limit: number;
+  offset: number;
+  now: string;
+  syncId: string;
+  historyLookbackDays: number;
+  existingDealsByAsin: Map<string, ExistingDealSnapshot>;
+  supabase: any;
+}) {
+  const ordered = Array.from(opts.existingDealsByAsin.entries()).sort((a, b) => {
+    const discA = Number(a[1]?.discount_pct ?? -1);
+    const discB = Number(b[1]?.discount_pct ?? -1);
+    if (discA !== discB) return discB - discA;
+
+    const listA = a[1]?.list_price_cents != null ? 1 : 0;
+    const listB = b[1]?.list_price_cents != null ? 1 : 0;
+    return listB - listA;
+  });
+
+  if (!ordered.length) {
+    return {
+      attempted_asins: 0,
+      rows: [] as DealRow[],
+      fallback_history_rows_used: 0,
+    };
+  }
+
+  const bootstrapLimit = Math.max(1, Math.min(opts.limit, ordered.length));
+  const bootstrapOffset = ((Math.max(0, opts.offset) % ordered.length) + ordered.length) % ordered.length;
+  const rotated = ordered.slice(bootstrapOffset).concat(ordered.slice(0, bootstrapOffset));
+  const asins = rotated.slice(0, bootstrapLimit).map(([asin]) => asin);
+
+  const historyLatestByAsin = await loadLatestPriceSnapshots({
+    supabase: opts.supabase,
+    asins,
+    lookbackHours: 24 * 7,
+    includeAllTimeFallback: true,
+  });
+
+  const historyBaselineByAsin = await loadRecentPriceBaselines({
+    supabase: opts.supabase,
+    asins,
+    lookbackDays: opts.historyLookbackDays,
+    includeAllTimeFallback: true,
+  });
+
+  const rows: DealRow[] = [];
+  let fallbackHistoryRowsUsed = 0;
+
+  for (const asin of asins) {
+    const existing = opts.existingDealsByAsin.get(asin);
+    if (!existing) continue;
+
+    const historyLatest = historyLatestByAsin.get(asin);
+    if (!historyLatest) continue;
+
+    const priceCents = historyLatest.price_cents;
+    const baselineCandidates = [
+      Number(existing.list_price_cents ?? 0),
+      Number(existing.price_cents ?? 0),
+      Number(historyLatest.list_price_cents ?? 0),
+      Number(historyBaselineByAsin.get(asin) ?? 0),
+    ];
+
+    const listCents = Math.max(...baselineCandidates.filter((v) => Number.isFinite(v) && v > 0));
+    if (!Number.isFinite(listCents) || listCents <= priceCents) continue;
+
+    let discountPct = computeDiscountPct(priceCents, listCents);
+    if (
+      discountPct == null &&
+      existing.discount_pct != null &&
+      existing.discount_pct >= opts.minDiscount &&
+      existing.price_cents != null &&
+      priceCents <= existing.price_cents
+    ) {
+      discountPct = existing.discount_pct;
+    }
+
+    if (discountPct == null || discountPct < opts.minDiscount) continue;
+
+    rows.push({
+      asin,
+      title: existing.title ?? asin,
+      artist: existing.artist ?? null,
+      image_url: existing.image_url ?? null,
+      amazon_url: buildAmazonUrl(asin),
+      price_cents: priceCents,
+      list_price_cents: listCents,
+      currency: historyLatest.currency ?? existing.currency ?? null,
+      discount_pct: discountPct,
+      category: "media",
+      media_type: opts.mediaType,
+      feed_key: opts.feedKey,
+      sales_rank: null,
+      genre: null,
+      browse_node_id: null,
+      updated_at: opts.now,
+      last_seen_at: opts.now,
+      sync_id: opts.syncId,
+    });
+
+    fallbackHistoryRowsUsed += 1;
+  }
+
+  return {
+    attempted_asins: asins.length,
+    rows,
+    fallback_history_rows_used: fallbackHistoryRowsUsed,
+  };
+}
+
 export async function refreshMedia(req: Request, config: MediaConfig) {
   const url = new URL(req.url);
   const token = url.searchParams.get("token");
@@ -1773,13 +1887,42 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
     if (mode === "discount" && keep.length === 0) {
       if (budgetExceeded()) {
+        const historyBootstrap = await bootstrapFromExistingHistoryOnly({
+          mediaType: config.media_type,
+          feedKey,
+          minDiscount,
+          limit: bootstrapLimit,
+          offset: bootstrapOffset,
+          now,
+          syncId,
+          historyLookbackDays,
+          existingDealsByAsin,
+          supabase,
+        });
+
+        let keptFromHistory = 0;
+        if (historyBootstrap.rows.length) {
+          for (const row of historyBootstrap.rows) {
+            if (seen.has(row.asin)) continue;
+            keep.push(row);
+            seen.add(row.asin);
+            stats.kept += 1;
+            stats.fallback_history_price_used += 1;
+            keptFromHistory += 1;
+          }
+        }
+
         stats.bootstrap_from_existing = {
-          skipped: true,
-          reason: "request_budget_exceeded_before_bootstrap",
+          attempted_asins: historyBootstrap.attempted_asins,
+          kept: keptFromHistory,
+          rows_returned: historyBootstrap.rows.length,
+          fallback_history_rows_used: historyBootstrap.fallback_history_rows_used,
+          reason: "history_only_after_budget_exceeded",
         };
+
         stats.bootstrap_from_tracked = {
           skipped: true,
-          reason: "request_budget_exceeded_before_bootstrap",
+          reason: keep.length > 0 ? "history_bootstrap_returned_rows" : "history_bootstrap_returned_no_rows",
         };
       } else {
         const bootstrap = await bootstrapFromExistingDeals({
@@ -1812,6 +1955,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           rows_returned: bootstrap.rows.length,
           fallback_existing_discount_used: bootstrap.fallback_existing_discount_used,
           fallback_history_baseline_used: bootstrap.fallback_history_baseline_used,
+          fallback_without_live_item: bootstrap.fallback_without_live_item,
           errors: bootstrap.errors.length,
         };
 
@@ -1857,6 +2001,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
                 rows_returned: trackedBootstrap.rows.length,
                 fallback_existing_discount_used: trackedBootstrap.fallback_existing_discount_used,
                 fallback_history_baseline_used: trackedBootstrap.fallback_history_baseline_used,
+                fallback_without_live_item: trackedBootstrap.fallback_without_live_item,
                 errors: trackedBootstrap.errors.length,
               };
 
