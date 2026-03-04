@@ -1021,6 +1021,7 @@ async function bootstrapFromExistingDeals(opts: {
   const rows: DealRow[] = [];
   const errorsOut: any[] = [];
   let fallbackExistingDiscountUsed = 0;
+  let fallbackExistingPriceUsed = 0;
   let fallbackHistoryBaselineUsed = 0;
   let fallbackWithoutLiveItem = 0;
 
@@ -1080,6 +1081,11 @@ async function bootstrapFromExistingDeals(opts: {
           listCents = listCents ?? historyLatest.list_price_cents;
           currency = currency ?? historyLatest.currency;
         }
+      }
+
+      if (priceCents == null && existing.price_cents != null) {
+        priceCents = existing.price_cents;
+        fallbackExistingPriceUsed += 1;
       }
 
       if (priceCents == null) continue;
@@ -1149,6 +1155,7 @@ async function bootstrapFromExistingDeals(opts: {
     attempted_asins: asins.length,
     rows,
     fallback_existing_discount_used: fallbackExistingDiscountUsed,
+    fallback_existing_price_used: fallbackExistingPriceUsed,
     fallback_history_baseline_used: fallbackHistoryBaselineUsed,
     fallback_without_live_item: fallbackWithoutLiveItem,
     errors: errorsOut,
@@ -1228,6 +1235,7 @@ async function bootstrapFromTrackedAsins(opts: {
   const rows: DealRow[] = [];
   const errorsOut: any[] = [];
   let fallbackExistingDiscountUsed = 0;
+  let fallbackExistingPriceUsed = 0;
   let fallbackHistoryBaselineUsed = 0;
   let fallbackWithoutLiveItem = 0;
 
@@ -1291,6 +1299,11 @@ async function bootstrapFromTrackedAsins(opts: {
         }
       }
 
+      if (priceCents == null && existing?.price_cents != null) {
+        priceCents = existing.price_cents;
+        fallbackExistingPriceUsed += 1;
+      }
+
       if (priceCents == null) continue;
 
       let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
@@ -1347,6 +1360,7 @@ async function bootstrapFromTrackedAsins(opts: {
     attempted_asins: asins.length,
     rows,
     fallback_existing_discount_used: fallbackExistingDiscountUsed,
+    fallback_existing_price_used: fallbackExistingPriceUsed,
     fallback_history_baseline_used: fallbackHistoryBaselineUsed,
     fallback_without_live_item: fallbackWithoutLiveItem,
     errors: errorsOut,
@@ -2014,6 +2028,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           kept: keptFromExisting,
           rows_returned: bootstrap.rows.length,
           fallback_existing_discount_used: bootstrap.fallback_existing_discount_used,
+          fallback_existing_price_used: bootstrap.fallback_existing_price_used,
           fallback_history_baseline_used: bootstrap.fallback_history_baseline_used,
           fallback_without_live_item: bootstrap.fallback_without_live_item,
           errors: bootstrap.errors.length,
@@ -2060,6 +2075,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
                 kept: keptFromTracked,
                 rows_returned: trackedBootstrap.rows.length,
                 fallback_existing_discount_used: trackedBootstrap.fallback_existing_discount_used,
+                fallback_existing_price_used: trackedBootstrap.fallback_existing_price_used,
                 fallback_history_baseline_used: trackedBootstrap.fallback_history_baseline_used,
                 fallback_without_live_item: trackedBootstrap.fallback_without_live_item,
                 errors: trackedBootstrap.errors.length,
