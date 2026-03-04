@@ -33,6 +33,19 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} bg-white text-slate-900`}
     >
+      <head>
+        <script async src="https://www.googletagmanager.com/gtag/js?id=G-TCYVTG6VDK" />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-TCYVTG6VDK');
+            `,
+          }}
+        />
+      </head>
       <body className="min-h-screen bg-white text-slate-900 antialiased">
         <SiteHeader />
         {children}
