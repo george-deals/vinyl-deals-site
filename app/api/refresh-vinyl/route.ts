@@ -297,15 +297,28 @@ function isLowQualityVinylRow(row: any) {
 
 async function upsertChunked(rows: any[]) {
   if (!rows.length) return 0;
+
   const filteredRows = rows.filter((r) => !isLowQualityVinylRow(r));
   if (!filteredRows.length) return 0;
+
+  const deduped = new Map<string, any>();
+  for (const row of filteredRows) {
+    const asin = String(row?.asin ?? "").trim();
+    if (!asin) continue;
+    const mediaType = String(row?.media_type ?? "vinyl").trim() || "vinyl";
+    const feedKey = String(row?.feed_key ?? "discount-15").trim() || "discount-15";
+    deduped.set(mediaType + "|" + feedKey + "|" + asin, { ...row, asin, media_type: mediaType, feed_key: feedKey });
+  }
+
+  const mergedRows = Array.from(deduped.values());
+  if (!mergedRows.length) return 0;
 
   const supabase = getSupabaseAdmin();
   const CHUNK = 500;
   let saved = 0;
 
-  for (let i = 0; i < filteredRows.length; i += CHUNK) {
-    const chunk = filteredRows.slice(i, i + CHUNK);
+  for (let i = 0; i < mergedRows.length; i += CHUNK) {
+    const chunk = mergedRows.slice(i, i + CHUNK);
     const { error } = await supabase.from("deals").upsert(chunk, {
       onConflict: "media_type,feed_key,asin",
     });
