@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: refresh-media-non-vinyl
+  group: refresh-blu-ray
   cancel-in-progress: false
 
 jobs:

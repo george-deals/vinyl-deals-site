@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: refresh-media-non-vinyl
+  group: refresh-4k-uhd
   cancel-in-progress: false
 
 jobs:
