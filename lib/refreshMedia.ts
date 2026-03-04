@@ -736,16 +736,22 @@ async function revalidateActiveDeals(opts: {
   minDiscount: number;
   limit: number;
   offset: number;
+  includeAll?: boolean;
 }) {
   const supabase = getSupabaseAdmin();
   const now = new Date().toISOString();
 
-  const { data: rows, error } = await supabase
+  let dealsQuery = supabase
     .from("deals")
     .select("asin,title,price_cents,list_price_cents,currency,discount_pct")
     .eq("media_type", opts.mediaType)
-    .eq("feed_key", opts.feedKey)
-    .gte("discount_pct", opts.minDiscount)
+    .eq("feed_key", opts.feedKey);
+
+  if (!opts.includeAll) {
+    dealsQuery = dealsQuery.gte("discount_pct", opts.minDiscount);
+  }
+
+  const { data: rows, error } = await dealsQuery
     .order("last_seen_at", { ascending: true })
     .range(opts.offset, opts.offset + opts.limit - 1);
 
@@ -822,10 +828,53 @@ async function revalidateActiveDeals(opts: {
       if (!item) {
         if (hasPartialResponse) {
           errorsOut.push({ asin, error: { message: "paapi_missing_in_partial_response" } });
-          continue;
+        } else {
+          errorsOut.push({ asin, error: { message: "paapi_item_missing" } });
         }
 
-        errorsOut.push({ asin, error: { message: "paapi_item_missing" } });
+        const historyLatest = historyLatestByAsin.get(asin);
+        if (!historyLatest) continue;
+
+        const priceCents = historyLatest.price_cents;
+        let listCents = existing.list_price_cents ?? historyLatest.list_price_cents ?? null;
+        const historyBaseline = historyBaselineByAsin.get(asin) ?? null;
+        if ((!listCents || listCents <= priceCents) && historyBaseline != null && historyBaseline > priceCents) {
+          listCents = historyBaseline;
+        }
+
+        let discountPct = computeDiscountPct(priceCents, listCents);
+        if (
+          discountPct == null &&
+          existing.discount_pct != null &&
+          existing.discount_pct >= opts.minDiscount &&
+          existing.price_cents != null &&
+          priceCents <= existing.price_cents
+        ) {
+          discountPct = existing.discount_pct;
+        }
+
+        if (discountPct != null && discountPct >= opts.minDiscount) {
+          discountedRows.push({
+            asin,
+            price_cents: priceCents,
+            list_price_cents: listCents,
+            currency: historyLatest.currency ?? existing.currency,
+            discount_pct: discountPct,
+            updated_at: now,
+            last_seen_at: now,
+          });
+          fallbackHistoryPriceUsed += 1;
+        } else {
+          invalidRows.push({
+            asin,
+            price_cents: priceCents,
+            list_price_cents: listCents,
+            currency: historyLatest.currency ?? existing.currency,
+            discount_pct: 0,
+            updated_at: now,
+          });
+          fallbackHistoryPriceUsed += 1;
+        }
         continue;
       }
 
@@ -1483,6 +1532,9 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
   const activeOffset = Math.max(0, Number(url.searchParams.get("activeOffset") ?? "0"));
   const revalidateOnlyParam = String(url.searchParams.get("revalidateOnly") ?? "").toLowerCase();
   const revalidateOnly = revalidateActive && ["1", "true", "yes"].includes(revalidateOnlyParam);
+  const activeIncludeAll = ["1", "true", "yes"].includes(
+    String(url.searchParams.get("activeIncludeAll") ?? "").toLowerCase()
+  );
 
   const now = new Date().toISOString();
   const syncId = randomUUID();
@@ -1538,6 +1590,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     stopped_early_reason: null as string | null,
     request_elapsed_ms: null as number | null,
     revalidate_active: null as any,
+    active_include_all: activeIncludeAll,
     bootstrap_from_existing: null as any,
     bootstrap_from_tracked: null as any,
   };
@@ -1598,6 +1651,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           minDiscount,
           limit: activeLimit,
           offset: activeOffset,
+          includeAll: activeIncludeAll,
         });
       } catch (e: any) {
         stats.revalidate_active = { ok: false, error: e?.message ?? String(e) };
