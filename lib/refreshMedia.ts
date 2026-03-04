@@ -1700,6 +1700,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     fallback_existing_list_used: 0,
     fallback_existing_price_used: 0,
     fallback_existing_discount_used: 0,
+    fallback_bucketed_price_used: 0,
+    fallback_bucketed_discount_used: 0,
     fallback_history_baseline_used: 0,
     fallback_history_price_used: 0,
     pricing_refetched_getitems: 0,
@@ -1935,11 +1937,28 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           includeAllTimeFallback: true,
         });
 
+        const bucketedByAsin =
+          config.media_type === "4k-uhd"
+            ? await loadBucketedSnapshots({
+                supabase,
+                asins: candidateAsins,
+                mediaType: config.media_type,
+              })
+            : new Map<string, {
+                price_cents: number | null;
+                list_price_cents: number | null;
+                currency: string | null;
+                discount_pct: number | null;
+                title: string | null;
+                image_url: string | null;
+              }>();
+
         for (const asin of candidateAsins) {
           const item = searchItemByAsin.get(asin);
           if (!item) continue;
 
           const existing = existingDealsByAsin.get(asin);
+          const bucketed = bucketedByAsin.get(asin);
           const pricing = pricingByAsin.get(asin) ?? extractCurrentPricing(item);
           let priceCents = pricing.priceCents;
 
@@ -1954,11 +1973,19 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             stats.fallback_existing_price_used += 1;
           }
 
+          if (priceCents == null && bucketed?.price_cents != null) {
+            priceCents = bucketed.price_cents;
+            stats.fallback_bucketed_price_used += 1;
+          }
+
           if (priceCents == null) continue;
 
           let listCents = pricing.listCents ?? existing?.list_price_cents ?? null;
           if (listCents == null && historyLatest) {
             listCents = historyLatest.list_price_cents ?? null;
+          }
+          if (listCents == null && bucketed?.list_price_cents != null) {
+            listCents = bucketed.list_price_cents;
           }
           let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
 
@@ -2006,6 +2033,20 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             ) {
               discountPct = existing.discount_pct;
               stats.fallback_existing_discount_used += 1;
+            }
+
+            if (
+              discountPct == null &&
+              bucketed?.discount_pct != null &&
+              bucketed.discount_pct >= minDiscount &&
+              bucketed.price_cents != null &&
+              priceCents <= bucketed.price_cents
+            ) {
+              discountPct = bucketed.discount_pct;
+              stats.fallback_bucketed_discount_used += 1;
+              if ((bucketed.list_price_cents ?? 0) > (listCents ?? 0)) {
+                listCents = bucketed.list_price_cents;
+              }
             }
 
             if (discountPct === null) continue;
