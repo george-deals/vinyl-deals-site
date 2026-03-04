@@ -32,15 +32,15 @@ jobs:
           echo "BASE: $BASE"
 
           echo "Revalidating active $TYPE deals..."
-          REVALIDATE_LIMIT=60
-          REVALIDATE_TOTAL=300
+          REVALIDATE_LIMIT=40
+          REVALIDATE_TOTAL=40
           revalidate_offset=0
           revalidate_calls=0
           revalidate_success=0
 
           while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
             revalidate_calls=$((revalidate_calls + 1))
-            revalidate_url="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&revalidateOnly=1&activeIncludeAll=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}"
+            revalidate_url="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&revalidateOnly=1&activeIncludeAll=0&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}"
             echo "Revalidate offset=$revalidate_offset limit=$REVALIDATE_LIMIT"
 
             ok=0
@@ -48,7 +48,7 @@ jobs:
               set +e
               RESP=$(curl -sS --fail-with-body \
                 --connect-timeout 20 \
-                --max-time 180 \
+                --max-time 120 \
                 "$revalidate_url")
               CODE=$?
               set -e
@@ -71,27 +71,26 @@ jobs:
           done
 
           if [ $revalidate_success -eq 0 ]; then
-            echo "ERROR: all 4k revalidate calls failed"
-            exit 1
+            echo "WARNING: all 4k revalidate calls failed; continuing to discovery."
           fi
 
-          PER_RUN=12
-          TOTAL=120
-          MAXPAGES=2
-          BOOTSTRAP_LIMIT=160
-          REQUEST_BUDGET_MS=120000
+          PER_RUN=4
+          TOTAL=40
+          MAXPAGES=1
+          BOOTSTRAP_LIMIT=120
+          REQUEST_BUDGET_MS=50000
           fails=0
           offset=0
 
           while [ $offset -lt $TOTAL ]; do
-            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}&bootstrapReserveMs=40000&historyLookbackDays=365"
+            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}&bootstrapReserveMs=15000&historyLookbackDays=365"
             echo "Chunk offset=$offset size=$PER_RUN"
 
             ok=0
             for i in 1 2; do
               echo "Attempt $i..."
               set +e
-              RESP=$(curl -sS --fail-with-body --max-time 180 "$URL")
+              RESP=$(curl -sS --fail-with-body --max-time 120 "$URL")
               CODE=$?
               set -e
               if [ $CODE -eq 0 ]; then
