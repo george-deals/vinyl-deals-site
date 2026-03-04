@@ -68,6 +68,14 @@ type ExistingDealSnapshot = {
   discount_pct: number | null;
 };
 
+type TrackedAsinSnapshot = {
+  asin: string;
+  title: string | null;
+  artist: string | null;
+  image_url: string | null;
+  amazon_url: string | null;
+};
+
 type CurrentPricing = {
   priceCents: number | null;
   listCents: number | null;
@@ -135,6 +143,23 @@ function extractArtist(item: any): string | null {
   if (typeof manu === "string" && manu.trim()) return manu.trim();
 
   return null;
+}
+
+function buildAmazonUrl(asin: string): string {
+  return `https://www.amazon.com/dp/${asin}?tag=${process.env.AMAZON_PARTNER_TAG}`;
+}
+
+function buildTrackedSnapshot(item: any): TrackedAsinSnapshot | null {
+  const asin = item?.ASIN ? String(item.ASIN) : "";
+  if (!asin) return null;
+
+  return {
+    asin,
+    title: item?.ItemInfo?.Title?.DisplayValue ?? null,
+    artist: extractArtist(item),
+    image_url: item?.Images?.Primary?.Large?.URL ?? null,
+    amazon_url: buildAmazonUrl(asin),
+  };
 }
 
 function normalizeText(v: any): string {
@@ -489,6 +514,45 @@ async function upsertChunked(rows: DealRow[]) {
   }
 }
 
+async function upsertTrackedAsinsChunked(opts: {
+  mediaType: MediaConfig["media_type"];
+  rows: TrackedAsinSnapshot[];
+  nowIso: string;
+}) {
+  if (!opts.rows.length) return { upserted: 0 };
+
+  const supabase = getSupabaseAdmin();
+  const deduped = new Map<string, TrackedAsinSnapshot>();
+  for (const row of opts.rows) {
+    if (!row?.asin) continue;
+    deduped.set(row.asin, row);
+  }
+
+  const rows = Array.from(deduped.values()).map((row) => ({
+    asin: row.asin,
+    media_type: opts.mediaType,
+    title: row.title,
+    artist: row.artist,
+    image_url: row.image_url,
+    amazon_url: row.amazon_url ?? buildAmazonUrl(row.asin),
+    last_seen_at: opts.nowIso,
+    is_active: true,
+  }));
+
+  const CHUNK = 500;
+  let upserted = 0;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const chunk = rows.slice(i, i + CHUNK);
+    const { error } = await supabase.from("tracked_asins").upsert(chunk, {
+      onConflict: "asin",
+    });
+    if (error) throw new Error(error.message);
+    upserted += chunk.length;
+  }
+
+  return { upserted };
+}
+
 function getPrimaryBrowseNodeId(item: any): number | null {
   const ws = item?.BrowseNodeInfo?.WebsiteSalesRank;
   const wsId = Number(ws?.BrowseNodeId);
@@ -541,26 +605,20 @@ async function loadRecentPriceBaselines(opts: {
   supabase: any;
   asins: string[];
   lookbackDays?: number;
+  includeAllTimeFallback?: boolean;
 }) {
   const uniqAsins = Array.from(new Set((opts.asins ?? []).filter(Boolean)));
   if (!uniqAsins.length) return new Map<string, number>();
 
-  const sinceIso = new Date(Date.now() - (opts.lookbackDays ?? 30) * 24 * 60 * 60 * 1000).toISOString();
+  const lookbackDays = Math.max(1, Math.min(opts.lookbackDays ?? 120, 365));
+  const sinceIso = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
+  const includeAllTimeFallback = opts.includeAllTimeFallback ?? true;
+
   const out = new Map<string, number>();
   const CHUNK = 150;
 
-  for (let i = 0; i < uniqAsins.length; i += CHUNK) {
-    const chunk = uniqAsins.slice(i, i + CHUNK);
-
-    const { data, error } = await opts.supabase
-      .from("asin_price_history")
-      .select("asin,price_cents,list_price_cents")
-      .in("asin", chunk)
-      .gte("checked_at", sinceIso);
-
-    if (error) continue;
-
-    for (const row of data ?? []) {
+  const ingest = (rows: any[] | null | undefined) => {
+    for (const row of rows ?? []) {
       const asin = row?.asin ? String(row.asin) : "";
       if (!asin) continue;
 
@@ -572,6 +630,30 @@ async function loadRecentPriceBaselines(opts: {
       const prev = out.get(asin) ?? 0;
       if (baseline > prev) out.set(asin, Math.round(baseline));
     }
+  };
+
+  for (let i = 0; i < uniqAsins.length; i += CHUNK) {
+    const chunk = uniqAsins.slice(i, i + CHUNK);
+
+    const { data, error } = await opts.supabase
+      .from("asin_price_history")
+      .select("asin,price_cents,list_price_cents")
+      .in("asin", chunk)
+      .gte("checked_at", sinceIso);
+
+    if (!error) ingest(data);
+
+    if (!includeAllTimeFallback) continue;
+
+    const unresolved = chunk.filter((asin) => !out.has(asin));
+    if (!unresolved.length) continue;
+
+    const { data: fallbackData, error: fallbackError } = await opts.supabase
+      .from("asin_price_history")
+      .select("asin,price_cents,list_price_cents")
+      .in("asin", unresolved);
+
+    if (!fallbackError) ingest(fallbackData);
   }
 
   return out;
@@ -754,8 +836,10 @@ async function bootstrapFromExistingDeals(opts: {
   feedKey: string;
   minDiscount: number;
   limit: number;
+  offset: number;
   now: string;
   syncId: string;
+  historyLookbackDays: number;
   existingDealsByAsin: Map<string, ExistingDealSnapshot>;
   supabase: any;
 }) {
@@ -769,7 +853,21 @@ async function bootstrapFromExistingDeals(opts: {
     return listB - listA;
   });
 
-  const asins = ordered.slice(0, opts.limit).map(([asin]) => asin);
+  if (!ordered.length) {
+    return {
+      attempted_asins: 0,
+      rows: [] as DealRow[],
+      fallback_existing_discount_used: 0,
+      fallback_history_baseline_used: 0,
+      errors: [] as any[],
+    };
+  }
+
+  const bootstrapLimit = Math.max(1, Math.min(opts.limit, ordered.length));
+  const bootstrapOffset = ((Math.max(0, opts.offset) % ordered.length) + ordered.length) % ordered.length;
+  const rotated = ordered.slice(bootstrapOffset).concat(ordered.slice(0, bootstrapOffset));
+
+  const asins = rotated.slice(0, bootstrapLimit).map(([asin]) => asin);
   const chunks: string[][] = [];
   for (let i = 0; i < asins.length; i += ITEM_COUNT) {
     chunks.push(asins.slice(i, i + ITEM_COUNT));
@@ -799,6 +897,8 @@ async function bootstrapFromExistingDeals(opts: {
     const historyBaselineByAsin = await loadRecentPriceBaselines({
       supabase: opts.supabase,
       asins: chunk,
+      lookbackDays: opts.historyLookbackDays,
+      includeAllTimeFallback: true,
     });
 
     for (const asin of chunk) {
@@ -826,6 +926,19 @@ async function bootstrapFromExistingDeals(opts: {
         }
       }
 
+      const existingBaseline = Math.max(
+        Number(existing.list_price_cents ?? 0),
+        Number(existing.price_cents ?? 0)
+      );
+      if (discountPct == null && Number.isFinite(existingBaseline) && existingBaseline > priceCents) {
+        const existingDiscount = computeDiscountPct(priceCents, existingBaseline);
+        if (existingDiscount != null) {
+          discountPct = existingDiscount;
+          listCents = Math.max(listCents ?? 0, existingBaseline);
+          fallbackExistingDiscountUsed += 1;
+        }
+      }
+
       if (
         discountPct == null &&
         existing.discount_pct != null &&
@@ -844,10 +957,182 @@ async function bootstrapFromExistingDeals(opts: {
         title: item?.ItemInfo?.Title?.DisplayValue ?? existing.title ?? asin,
         artist: existing.artist ?? null,
         image_url: existing.image_url ?? null,
-        amazon_url: "https://www.amazon.com/dp/" + asin + "?tag=" + process.env.AMAZON_PARTNER_TAG,
+        amazon_url: buildAmazonUrl(asin),
         price_cents: priceCents,
         list_price_cents: listCents,
         currency: pricing.currency ?? existing.currency ?? null,
+        discount_pct: discountPct,
+        category: "media",
+        media_type: opts.mediaType,
+        feed_key: opts.feedKey,
+        sales_rank: null,
+        genre: null,
+        browse_node_id: null,
+        updated_at: opts.now,
+        last_seen_at: opts.now,
+        sync_id: opts.syncId,
+      });
+    }
+  }
+
+  return {
+    attempted_asins: asins.length,
+    rows,
+    fallback_existing_discount_used: fallbackExistingDiscountUsed,
+    fallback_history_baseline_used: fallbackHistoryBaselineUsed,
+    errors: errorsOut,
+  };
+}
+
+async function loadTrackedAsinsForBootstrap(opts: {
+  supabase: any;
+  mediaType: MediaConfig["media_type"];
+  limit: number;
+  offset: number;
+}) {
+  const { data, error } = await opts.supabase
+    .from("tracked_asins")
+    .select("asin,title,artist,image_url,amazon_url")
+    .eq("media_type", opts.mediaType)
+    .eq("is_active", true)
+    .order("last_seen_at", { ascending: false })
+    .range(opts.offset, opts.offset + opts.limit - 1);
+
+  if (error) throw new Error(error.message);
+
+  const out: TrackedAsinSnapshot[] = [];
+  for (const row of data ?? []) {
+    const asin = row?.asin ? String(row.asin) : "";
+    if (!asin) continue;
+    out.push({
+      asin,
+      title: row?.title ?? null,
+      artist: row?.artist ?? null,
+      image_url: row?.image_url ?? null,
+      amazon_url: row?.amazon_url ?? null,
+    });
+  }
+
+  return out;
+}
+
+async function bootstrapFromTrackedAsins(opts: {
+  mediaType: MediaConfig["media_type"];
+  feedKey: string;
+  minDiscount: number;
+  limit: number;
+  offset: number;
+  now: string;
+  syncId: string;
+  historyLookbackDays: number;
+  existingDealsByAsin: Map<string, ExistingDealSnapshot>;
+  supabase: any;
+}) {
+  const trackedRows = await loadTrackedAsinsForBootstrap({
+    supabase: opts.supabase,
+    mediaType: opts.mediaType,
+    limit: opts.limit,
+    offset: opts.offset,
+  });
+
+  const trackedByAsin = new Map<string, TrackedAsinSnapshot>();
+  for (const row of trackedRows) trackedByAsin.set(row.asin, row);
+
+  const asins = Array.from(trackedByAsin.keys());
+  if (!asins.length) {
+    return {
+      attempted_asins: 0,
+      rows: [] as DealRow[],
+      fallback_existing_discount_used: 0,
+      fallback_history_baseline_used: 0,
+      errors: [] as any[],
+    };
+  }
+
+  const chunks: string[][] = [];
+  for (let i = 0; i < asins.length; i += ITEM_COUNT) {
+    chunks.push(asins.slice(i, i + ITEM_COUNT));
+  }
+
+  const rows: DealRow[] = [];
+  const errorsOut: any[] = [];
+  let fallbackExistingDiscountUsed = 0;
+  let fallbackHistoryBaselineUsed = 0;
+
+  for (const chunk of chunks) {
+    let items: any[] = [];
+    try {
+      items = await withRetry(() => paapiGetItems(chunk));
+    } catch (e: any) {
+      errorsOut.push({ asins: chunk, error: extractAxiosError(e) });
+      continue;
+    }
+
+    const itemByAsin = new Map<string, any>();
+    for (const item of items ?? []) {
+      const asin = item?.ASIN;
+      if (!asin) continue;
+      itemByAsin.set(String(asin), item);
+    }
+
+    const historyBaselineByAsin = await loadRecentPriceBaselines({
+      supabase: opts.supabase,
+      asins: chunk,
+      lookbackDays: opts.historyLookbackDays,
+      includeAllTimeFallback: true,
+    });
+
+    for (const asin of chunk) {
+      const tracked = trackedByAsin.get(asin);
+      if (!tracked) continue;
+
+      const item = itemByAsin.get(asin);
+      if (!item) continue;
+
+      const existing = opts.existingDealsByAsin.get(asin);
+      if (!itemMatchesMediaType(opts.mediaType, item, tracked.title ?? existing?.title ?? null)) continue;
+
+      const pricing = extractCurrentPricing(item);
+      const priceCents = pricing.priceCents;
+      if (priceCents == null) continue;
+
+      let listCents = pricing.listCents ?? existing?.list_price_cents ?? null;
+      let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
+
+      const historyBaseline = historyBaselineByAsin.get(asin) ?? null;
+      if (discountPct == null && historyBaseline != null && historyBaseline > priceCents) {
+        const historyDiscount = computeDiscountPct(priceCents, historyBaseline);
+        if (historyDiscount != null) {
+          discountPct = historyDiscount;
+          listCents = Math.max(listCents ?? 0, historyBaseline);
+          fallbackHistoryBaselineUsed += 1;
+        }
+      }
+
+      const existingBaseline = Math.max(
+        Number(existing?.list_price_cents ?? 0),
+        Number(existing?.price_cents ?? 0)
+      );
+      if (discountPct == null && Number.isFinite(existingBaseline) && existingBaseline > priceCents) {
+        const existingDiscount = computeDiscountPct(priceCents, existingBaseline);
+        if (existingDiscount != null) {
+          discountPct = existingDiscount;
+          listCents = Math.max(listCents ?? 0, existingBaseline);
+          fallbackExistingDiscountUsed += 1;
+        }
+      }
+
+      if (discountPct == null || discountPct < opts.minDiscount) continue;
+
+      rows.push({
+        asin,
+        title: item?.ItemInfo?.Title?.DisplayValue ?? tracked.title ?? existing?.title ?? asin,
+        artist: extractArtist(item) ?? tracked.artist ?? existing?.artist ?? null,
+        image_url: tracked.image_url ?? existing?.image_url ?? null,
+        amazon_url: tracked.amazon_url ?? buildAmazonUrl(asin),
+        price_cents: priceCents,
+        list_price_cents: listCents,
+        currency: pricing.currency ?? existing?.currency ?? null,
         discount_pct: discountPct,
         category: "media",
         media_type: opts.mediaType,
@@ -902,6 +1187,28 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     Math.max(Number(url.searchParams.get("requestBudgetMs") ?? "90000"), 20000),
     170000
   );
+  const historyLookbackDays = Math.max(
+    7,
+    Math.min(Number(url.searchParams.get("historyLookbackDays") ?? "120"), 365)
+  );
+
+  const bootstrapLimit = Math.min(
+    Math.max(Number(url.searchParams.get("bootstrapLimit") ?? "120"), 20),
+    400
+  );
+  const sourceOffset = Math.max(
+    0,
+    Number(url.searchParams.get("moviesOffset") ?? url.searchParams.get("catalogOffset") ?? "0")
+  );
+  const sourcePerRun = Math.max(
+    1,
+    Number(url.searchParams.get("moviesPerRun") ?? url.searchParams.get("catalogPerRun") ?? "10")
+  );
+  const sourceChunkIndex = Math.floor(sourceOffset / sourcePerRun);
+  const bootstrapOffsetParam = Number(url.searchParams.get("bootstrapOffset") ?? "NaN");
+  const bootstrapOffset = Number.isFinite(bootstrapOffsetParam)
+    ? Math.max(0, bootstrapOffsetParam)
+    : sourceChunkIndex * bootstrapLimit;
 
   const revalidateActive = ["1", "true", "yes"].includes(
     String(url.searchParams.get("revalidateActive") ?? "").toLowerCase()
@@ -921,6 +1228,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
   const seen = new Set<string>();
   const keep: DealRow[] = [];
   const errors: any[] = [];
+  const trackedSnapshots = new Map<string, TrackedAsinSnapshot>();
 
   const stats: any = {
     build_id: BUILD_ID,
@@ -933,8 +1241,16 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     maxPages,
     delayMs,
     request_budget_ms: requestBudgetMs,
+    history_lookback_days: historyLookbackDays,
+    bootstrap_limit: bootstrapLimit,
+    bootstrap_offset: bootstrapOffset,
     keywords: config.keywords.length,
     items_returned: 0,
+    candidate_items_considered: 0,
+    candidate_items_with_price: 0,
+    getitems_chunks_requested: 0,
+    getitems_items_returned: 0,
+    getitems_items_with_price: 0,
     items_with_discount_data: 0,
     filtered_under_min_discount: 0,
     filtered_over_max_price: 0,
@@ -943,6 +1259,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     fallback_existing_discount_used: 0,
     fallback_history_baseline_used: 0,
     pricing_refetched_getitems: 0,
+    tracked_asins_upserted: 0,
     kept: 0,
     db_sync_rows_after_upsert: null as number | null,
     db_feedkey_integrity_warning: null as string | null,
@@ -950,6 +1267,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     request_elapsed_ms: null as number | null,
     revalidate_active: null as any,
     bootstrap_from_existing: null as any,
+    bootstrap_from_tracked: null as any,
   };
 
   const supabase = getSupabaseAdmin();
@@ -1070,6 +1388,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           historyBaselineByAsin = await loadRecentPriceBaselines({
             supabase,
             asins: (items ?? []).map((it) => String(it?.ASIN ?? "")).filter(Boolean),
+            lookbackDays: historyLookbackDays,
+            includeAllTimeFallback: true,
           });
         }
 
@@ -1087,11 +1407,16 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             continue;
           }
 
+          const trackedSnapshot = buildTrackedSnapshot(item);
+          if (trackedSnapshot) trackedSnapshots.set(trackedSnapshot.asin, trackedSnapshot);
+
           candidateAsins.push(asin);
+          stats.candidate_items_considered += 1;
           searchItemByAsin.set(asin, item);
 
           const pricing = extractCurrentPricing(item);
           pricingByAsin.set(asin, pricing);
+          if (pricing.priceCents != null) stats.candidate_items_with_price += 1;
           if (mode === "discount" || pricing.priceCents == null) asinsForGetItems.push(asin);
         }
 
@@ -1101,6 +1426,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           for (let i = 0; i < asinsForGetItems.length; i += ITEM_COUNT) {
             pricingChunks.push(asinsForGetItems.slice(i, i + ITEM_COUNT));
           }
+          stats.getitems_chunks_requested += pricingChunks.length;
 
           for (const chunk of pricingChunks) {
             if (budgetExceeded()) {
@@ -1116,6 +1442,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
               continue;
             }
 
+            stats.getitems_items_returned += fullItems.length;
+
             const fullByAsin = new Map<string, any>();
             for (const full of fullItems ?? []) {
               if (full?.ASIN) fullByAsin.set(String(full.ASIN), full);
@@ -1129,6 +1457,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
               if (fullPricing.priceCents != null) {
                 pricingByAsin.set(asin, fullPricing);
                 refetchedWithGetItems += 1;
+                stats.getitems_items_with_price += 1;
               }
 
               const searchItem = searchItemByAsin.get(asin);
@@ -1143,13 +1472,15 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
               } else {
                 searchItemByAsin.set(asin, full);
               }
+
+              const fullSnapshot = buildTrackedSnapshot(full);
+              if (fullSnapshot) trackedSnapshots.set(fullSnapshot.asin, fullSnapshot);
             }
           }
         }
 
-        if (refetchedWithGetItems > 0) {
-          stats.pricing_refetched_getitems = (stats.pricing_refetched_getitems ?? 0) + refetchedWithGetItems;
-        }
+        stats.pricing_refetched_getitems =
+          (stats.pricing_refetched_getitems ?? 0) + refetchedWithGetItems;
 
         for (const asin of candidateAsins) {
           const item = searchItemByAsin.get(asin);
@@ -1171,6 +1502,19 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
               discountPct = historyDiscount;
               listCents = Math.max(listCents ?? 0, historyBaseline);
               stats.fallback_history_baseline_used += 1;
+            }
+          }
+
+          const existingBaseline = Math.max(
+            Number(existing?.list_price_cents ?? 0),
+            Number(existing?.price_cents ?? 0)
+          );
+          if (discountPct == null && Number.isFinite(existingBaseline) && existingBaseline > priceCents) {
+            const existingDiscount = computeDiscountPct(priceCents, existingBaseline);
+            if (existingDiscount != null) {
+              discountPct = existingDiscount;
+              listCents = Math.max(listCents ?? 0, existingBaseline);
+              stats.fallback_existing_discount_used += 1;
             }
           }
 
@@ -1213,7 +1557,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             title: item?.ItemInfo?.Title?.DisplayValue ?? existing?.title ?? asin,
             artist,
             image_url: item?.Images?.Primary?.Large?.URL ?? existing?.image_url ?? null,
-            amazon_url: "https://www.amazon.com/dp/" + asin + "?tag=" + process.env.AMAZON_PARTNER_TAG,
+            amazon_url: buildAmazonUrl(asin),
             price_cents: priceCents,
             list_price_cents: listCents,
             currency: pricing.currency ?? existing?.currency ?? null,
@@ -1237,41 +1581,61 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       }
     }
 
-    if (mode === "discount" && keep.length === 0 && existingDealsByAsin.size > 0) {
+    if (trackedSnapshots.size) {
+      try {
+        const trackedUpsert = await upsertTrackedAsinsChunked({
+          mediaType: config.media_type,
+          rows: Array.from(trackedSnapshots.values()),
+          nowIso: now,
+        });
+        stats.tracked_asins_upserted = trackedUpsert.upserted;
+      } catch (e: any) {
+        errors.push({
+          kind: "tracked_asins_upsert_failed",
+          error: e?.message ?? String(e),
+        });
+      }
+    }
+
+    if (mode === "discount" && keep.length === 0) {
       if (budgetExceeded()) {
         stats.bootstrap_from_existing = {
           skipped: true,
           reason: "request_budget_exceeded_before_bootstrap",
         };
+        stats.bootstrap_from_tracked = {
+          skipped: true,
+          reason: "request_budget_exceeded_before_bootstrap",
+        };
       } else {
-        const bootstrapLimit = Math.min(
-          Math.max(Number(url.searchParams.get("bootstrapLimit") ?? "120"), 20),
-          400
-        );
-
         const bootstrap = await bootstrapFromExistingDeals({
           mediaType: config.media_type,
           feedKey,
           minDiscount,
           limit: bootstrapLimit,
+          offset: bootstrapOffset,
           now,
           syncId,
+          historyLookbackDays,
           existingDealsByAsin,
           supabase,
         });
 
+        let keptFromExisting = 0;
         if (bootstrap.rows.length) {
           for (const row of bootstrap.rows) {
             if (seen.has(row.asin)) continue;
             keep.push(row);
             seen.add(row.asin);
             stats.kept += 1;
+            keptFromExisting += 1;
           }
         }
 
         stats.bootstrap_from_existing = {
           attempted_asins: bootstrap.attempted_asins,
-          kept: bootstrap.rows.length,
+          kept: keptFromExisting,
+          rows_returned: bootstrap.rows.length,
           fallback_existing_discount_used: bootstrap.fallback_existing_discount_used,
           fallback_history_baseline_used: bootstrap.fallback_history_baseline_used,
           errors: bootstrap.errors.length,
@@ -1279,6 +1643,64 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
         if (bootstrap.errors.length) {
           errors.push(...bootstrap.errors);
+        }
+
+        if (keep.length === 0) {
+          if (budgetExceeded()) {
+            stats.bootstrap_from_tracked = {
+              skipped: true,
+              reason: "request_budget_exceeded_before_tracked_bootstrap",
+            };
+          } else {
+            try {
+              const trackedBootstrap = await bootstrapFromTrackedAsins({
+                mediaType: config.media_type,
+                feedKey,
+                minDiscount,
+                limit: bootstrapLimit,
+                offset: bootstrapOffset,
+                now,
+                syncId,
+                historyLookbackDays,
+                existingDealsByAsin,
+                supabase,
+              });
+
+              let keptFromTracked = 0;
+              if (trackedBootstrap.rows.length) {
+                for (const row of trackedBootstrap.rows) {
+                  if (seen.has(row.asin)) continue;
+                  keep.push(row);
+                  seen.add(row.asin);
+                  stats.kept += 1;
+                  keptFromTracked += 1;
+                }
+              }
+
+              stats.bootstrap_from_tracked = {
+                attempted_asins: trackedBootstrap.attempted_asins,
+                kept: keptFromTracked,
+                rows_returned: trackedBootstrap.rows.length,
+                fallback_existing_discount_used: trackedBootstrap.fallback_existing_discount_used,
+                fallback_history_baseline_used: trackedBootstrap.fallback_history_baseline_used,
+                errors: trackedBootstrap.errors.length,
+              };
+
+              if (trackedBootstrap.errors.length) {
+                errors.push(...trackedBootstrap.errors);
+              }
+            } catch (e: any) {
+              stats.bootstrap_from_tracked = {
+                ok: false,
+                error: e?.message ?? String(e),
+              };
+            }
+          }
+        } else {
+          stats.bootstrap_from_tracked = {
+            skipped: true,
+            reason: "existing_bootstrap_returned_rows",
+          };
         }
       }
     }

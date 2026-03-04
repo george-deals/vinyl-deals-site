@@ -150,9 +150,19 @@ async function upsertTrackedAsins(rows: any[]) {
   let total = 0;
   for (let i = 0; i < rows.length; i += CHUNK) {
     const chunk = rows.slice(i, i + CHUNK);
-    const { error } = await supabase.from("tracked_asins").upsert(chunk, {
+
+    let { error } = await supabase.from("tracked_asins").upsert(chunk, {
       onConflict: "asin,media_type",
     });
+
+    // Some environments only have a primary key on asin.
+    if (error && /on conflict|constraint|unique/i.test(String(error.message ?? ""))) {
+      const fallback = await supabase.from("tracked_asins").upsert(chunk, {
+        onConflict: "asin",
+      });
+      error = fallback.error;
+    }
+
     if (error) throw new Error(error.message);
     total += chunk.length;
   }
