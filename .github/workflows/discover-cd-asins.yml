@@ -25,7 +25,28 @@ jobs:
           BASE="${BASE%/}"
           if [ -z "$BASE" ]; then BASE="https://www.mediadealshub.com"; fi
 
-          URL="$BASE/api/discover-cd-asins?token=$TOKEN&maxPages=2&delayMs=2500&catalogPerRun=30"
+          URL="$BASE/api/discover-cd-asins?token=$TOKEN&maxPages=1&delayMs=0&catalogPerRun=20&requestBudgetMs=120000"
 
           echo "URL: $URL"
-          curl -sS --fail --max-time 240 "$URL"
+
+          ok=0
+          for attempt in 1 2; do
+            set +e
+            RESP=$(curl -sS --fail-with-body --max-time 200 "$URL")
+            CODE=$?
+            set -e
+
+            if [ $CODE -eq 0 ]; then
+              echo "$RESP"
+              ok=1
+              break
+            fi
+
+            echo "discover-cd failed (attempt $attempt, code=$CODE)."
+            sleep $((attempt * 8))
+          done
+
+          if [ $ok -ne 1 ]; then
+            echo "discover-cd failed after retries"
+            exit 1
+          fi

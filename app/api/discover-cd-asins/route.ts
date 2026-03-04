@@ -8,6 +8,9 @@ export const runtime = "nodejs";
 
 const ITEM_COUNT = 10;
 const MAX_ITEMPAGE = 10; // PA-API max ItemPage is 10
+const PAAPI_MIN_INTERVAL_MS = 1100;
+const REQUEST_BUDGET_MS_DEFAULT = 120000;
+const REQUEST_BUDGET_MS_MAX = 240000;
 
 function toCents(n: any): number | null {
   const x = Number(n);
@@ -20,6 +23,19 @@ function uniqClean(list: string[]): string[] {
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+let _paapiLastAt = 0;
+let _paapiChain: Promise<void> = Promise.resolve();
+
+async function paapiGate() {
+  _paapiChain = _paapiChain.then(async () => {
+    const now = Date.now();
+    const wait = Math.max(0, _paapiLastAt + PAAPI_MIN_INTERVAL_MS - now);
+    if (wait > 0) await sleep(wait);
+    _paapiLastAt = Date.now();
+  });
+  await _paapiChain;
 }
 
 function extractAxiosError(e: any) {
@@ -70,16 +86,23 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 4) {
   let lastErr: any = null;
   for (let i = 0; i < attempts; i++) {
     try {
+      await paapiGate();
       return await fn();
     } catch (e: any) {
       lastErr = e;
       const status = e?.response?.status;
       const code = e?.response?.data?.Errors?.[0]?.Code;
-      if (status === 429 || code === "TooManyRequests") {
-        await sleep(600 * Math.pow(2, i));
-        continue;
-      }
-      throw e;
+      const is429 = status === 429 || code === "TooManyRequests";
+      const isTransient =
+        is429 ||
+        status === 408 ||
+        status === 425 ||
+        status === 500 ||
+        status === 502 ||
+        status === 503 ||
+        status === 504;
+      if (!isTransient || i === attempts - 1) break;
+      await sleep((is429 ? 1200 : 600) * Math.pow(2, i));
     }
   }
   throw lastErr;
@@ -168,9 +191,17 @@ export async function GET(req: Request) {
   const maxPages = Math.min(Math.max(maxPagesRaw, 1), 2);
   const delayMs = Math.min(Math.max(Number(searchParams.get("delayMs") ?? "1200"), 0), 5000);
   const catalogPerRun = Math.min(Math.max(Number(searchParams.get("catalogPerRun") ?? "150"), 0), 500);
+  const requestBudgetMs = Math.min(
+    Math.max(Number(searchParams.get("requestBudgetMs") ?? String(REQUEST_BUDGET_MS_DEFAULT)), 15000),
+    REQUEST_BUDGET_MS_MAX
+  );
 
   const hourSeed = Math.floor(Date.now() / 3600000);
   const now = new Date().toISOString();
+  const startedAtMs = Date.now();
+  const requestElapsedMs = () => Date.now() - startedAtMs;
+  const budgetExceeded = () => requestElapsedMs() >= requestBudgetMs;
+  let stoppedEarlyReason: string | null = null;
 
   const catalogArtistsAll = uniqClean(await readArtistFile("data/catalog-artists.txt"));
   const batch = rotateSlice(catalogArtistsAll, catalogPerRun, hourSeed);
@@ -185,10 +216,20 @@ export async function GET(req: Request) {
   let itemsReturned = 0;
   let asinsDiscovered = 0;
 
-  for (const kw of keywords) {
+  keywordLoop: for (const kw of keywords) {
+    if (budgetExceeded()) {
+      stoppedEarlyReason = "request_budget_exceeded_before_keyword";
+      break keywordLoop;
+    }
+
     const pagesForThisKeyword = Math.min(Math.max(maxPages, 1), MAX_ITEMPAGE);
 
     for (let page = 1; page <= pagesForThisKeyword; page++) {
+      if (budgetExceeded()) {
+        stoppedEarlyReason = "request_budget_exceeded_during_pages";
+        break keywordLoop;
+      }
+
       let items: any[] = [];
       try {
         items = await withRetry(() => paapiSearch({ keyword: kw, itemPage: page }));
@@ -230,6 +271,11 @@ export async function GET(req: Request) {
       }
 
       if (delayMs > 0) await sleep(delayMs);
+
+      if (budgetExceeded()) {
+        stoppedEarlyReason = "request_budget_exceeded_after_page";
+        break keywordLoop;
+      }
     }
   }
 
@@ -244,6 +290,9 @@ export async function GET(req: Request) {
     keywords: keywords.length,
     maxPages,
     delayMs,
+    request_budget_ms: requestBudgetMs,
+    request_elapsed_ms: requestElapsedMs(),
+    stopped_early_reason: stoppedEarlyReason,
     itemsReturned,
     asinsDiscovered,
     upserted: toUpsert.length,

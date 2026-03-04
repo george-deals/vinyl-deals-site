@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: refresh-4k-uhd
-  cancel-in-progress: true
+  group: refresh-media-non-vinyl
+  cancel-in-progress: false
 
 jobs:
   refresh:
@@ -51,19 +51,19 @@ jobs:
           TOTAL=40
           MAXPAGES=1
           BOOTSTRAP_LIMIT=80
-          REQUEST_BUDGET_MS=90000
+          REQUEST_BUDGET_MS=70000
           fails=0
           offset=0
 
           while [ $offset -lt $TOTAL ]; do
-            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}"
+            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}&bootstrapReserveMs=25000"
             echo "Chunk offset=$offset size=$PER_RUN"
 
             ok=0
             for i in 1 2; do
               echo "Attempt $i..."
               set +e
-              RESP=$(curl -sS --fail-with-body --max-time 120 "$URL")
+              RESP=$(curl -sS --fail-with-body --max-time 180 "$URL")
               CODE=$?
               set -e
               if [ $CODE -eq 0 ]; then

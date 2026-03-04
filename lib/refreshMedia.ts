@@ -659,6 +659,77 @@ async function loadRecentPriceBaselines(opts: {
   return out;
 }
 
+async function loadLatestPriceSnapshots(opts: {
+  supabase: any;
+  asins: string[];
+  lookbackHours?: number;
+  includeAllTimeFallback?: boolean;
+}) {
+  const uniqAsins = Array.from(new Set((opts.asins ?? []).filter(Boolean)));
+  if (!uniqAsins.length) {
+    return new Map<
+      string,
+      { price_cents: number; list_price_cents: number | null; currency: string | null; checked_at: string | null }
+    >();
+  }
+
+  const lookbackHours = Math.max(1, Math.min(opts.lookbackHours ?? 72, 24 * 30));
+  const sinceIso = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString();
+  const includeAllTimeFallback = opts.includeAllTimeFallback ?? true;
+
+  const out = new Map<
+    string,
+    { price_cents: number; list_price_cents: number | null; currency: string | null; checked_at: string | null }
+  >();
+  const CHUNK = 150;
+
+  const ingestLatest = (rows: any[] | null | undefined) => {
+    for (const row of rows ?? []) {
+      const asin = row?.asin ? String(row.asin) : "";
+      if (!asin || out.has(asin)) continue;
+
+      const price = Number(row?.price_cents);
+      if (!Number.isFinite(price) || price <= 0) continue;
+
+      const list = Number(row?.list_price_cents);
+      out.set(asin, {
+        price_cents: Math.round(price),
+        list_price_cents: Number.isFinite(list) && list > 0 ? Math.round(list) : null,
+        currency: row?.currency ? String(row.currency) : null,
+        checked_at: row?.checked_at ? String(row.checked_at) : null,
+      });
+    }
+  };
+
+  for (let i = 0; i < uniqAsins.length; i += CHUNK) {
+    const chunk = uniqAsins.slice(i, i + CHUNK);
+
+    const { data, error } = await opts.supabase
+      .from("asin_price_history")
+      .select("asin,checked_at,price_cents,list_price_cents,currency")
+      .in("asin", chunk)
+      .gte("checked_at", sinceIso)
+      .order("checked_at", { ascending: false });
+
+    if (!error) ingestLatest(data);
+
+    if (!includeAllTimeFallback) continue;
+
+    const unresolved = chunk.filter((asin) => !out.has(asin));
+    if (!unresolved.length) continue;
+
+    const { data: fallbackData, error: fallbackError } = await opts.supabase
+      .from("asin_price_history")
+      .select("asin,checked_at,price_cents,list_price_cents,currency")
+      .in("asin", unresolved)
+      .order("checked_at", { ascending: false });
+
+    if (!fallbackError) ingestLatest(fallbackData);
+  }
+
+  return out;
+}
+
 async function revalidateActiveDeals(opts: {
   mediaType: MediaConfig["media_type"];
   feedKey: string;
@@ -702,6 +773,7 @@ async function revalidateActiveDeals(opts: {
   const discountedRows: any[] = [];
   const invalidRows: any[] = [];
   const errorsOut: any[] = [];
+  let fallbackHistoryPriceUsed = 0;
 
   for (const chunk of chunks) {
     let items: any[] = [];
@@ -724,6 +796,19 @@ async function revalidateActiveDeals(opts: {
       errorsOut.push({ asins: chunk, error: { message: "paapi_partial_response", returned: items.length } });
     }
 
+    const historyLatestByAsin = await loadLatestPriceSnapshots({
+      supabase,
+      asins: chunk,
+      lookbackHours: 72,
+      includeAllTimeFallback: true,
+    });
+    const historyBaselineByAsin = await loadRecentPriceBaselines({
+      supabase,
+      asins: chunk,
+      lookbackDays: 120,
+      includeAllTimeFallback: true,
+    });
+
     for (const asin of chunk) {
       const existing = byAsin.get(asin) ?? {
         asin,
@@ -741,11 +826,7 @@ async function revalidateActiveDeals(opts: {
           continue;
         }
 
-        invalidRows.push({
-          asin,
-          discount_pct: 0,
-          updated_at: now,
-        });
+        errorsOut.push({ asin, error: { message: "paapi_item_missing" } });
         continue;
       }
 
@@ -763,20 +844,35 @@ async function revalidateActiveDeals(opts: {
       }
 
       const pricing = extractCurrentPricing(item);
-      const priceCents = pricing.priceCents;
-      const listCents = pricing.listCents ?? existing.list_price_cents;
-      const currency = pricing.currency ?? existing.currency;
+      let priceCents = pricing.priceCents;
+      let listCents = pricing.listCents ?? existing.list_price_cents;
+      let currency = pricing.currency ?? existing.currency;
 
       if (priceCents == null) {
-        invalidRows.push({
-          asin,
-          discount_pct: 0,
-          updated_at: now,
-        });
+        const historyLatest = historyLatestByAsin.get(asin);
+        if (historyLatest) {
+          priceCents = historyLatest.price_cents;
+          listCents = listCents ?? historyLatest.list_price_cents;
+          currency = currency ?? historyLatest.currency;
+          fallbackHistoryPriceUsed += 1;
+        }
+      }
+
+      if (priceCents == null) {
+        errorsOut.push({ asin, error: { message: "no_price_data" } });
         continue;
       }
 
       let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
+
+      const historyBaseline = historyBaselineByAsin.get(asin) ?? null;
+      if (discountPct == null && historyBaseline != null && historyBaseline > priceCents) {
+        const historyDiscount = computeDiscountPct(priceCents, historyBaseline);
+        if (historyDiscount != null) {
+          discountPct = historyDiscount;
+          listCents = Math.max(listCents ?? 0, historyBaseline);
+        }
+      }
 
       if (
         discountPct == null &&
@@ -827,6 +923,7 @@ async function revalidateActiveDeals(opts: {
     attempted_asins: asins.length,
     updated_discounted: updatedDiscounted,
     updated_invalid: updatedInvalid,
+    fallback_history_price_used: fallbackHistoryPriceUsed,
     errors: [...errorsOut, ...discountedErrors, ...invalidErrors],
   };
 }
@@ -900,6 +997,12 @@ async function bootstrapFromExistingDeals(opts: {
       lookbackDays: opts.historyLookbackDays,
       includeAllTimeFallback: true,
     });
+    const historyLatestByAsin = await loadLatestPriceSnapshots({
+      supabase: opts.supabase,
+      asins: chunk,
+      lookbackHours: 72,
+      includeAllTimeFallback: true,
+    });
 
     for (const asin of chunk) {
       const existing = opts.existingDealsByAsin.get(asin);
@@ -910,10 +1013,21 @@ async function bootstrapFromExistingDeals(opts: {
       if (!itemMatchesMediaType(opts.mediaType, item, existing.title)) continue;
 
       const pricing = extractCurrentPricing(item);
-      const priceCents = pricing.priceCents;
+      let priceCents = pricing.priceCents;
+      let listCents = pricing.listCents ?? existing.list_price_cents;
+      let currency = pricing.currency ?? existing.currency ?? null;
+
+      if (priceCents == null) {
+        const historyLatest = historyLatestByAsin.get(asin);
+        if (historyLatest) {
+          priceCents = historyLatest.price_cents;
+          listCents = listCents ?? historyLatest.list_price_cents;
+          currency = currency ?? historyLatest.currency;
+        }
+      }
+
       if (priceCents == null) continue;
 
-      let listCents = pricing.listCents ?? existing.list_price_cents;
       let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
 
       const historyBaseline = historyBaselineByAsin.get(asin) ?? null;
@@ -960,7 +1074,7 @@ async function bootstrapFromExistingDeals(opts: {
         amazon_url: buildAmazonUrl(asin),
         price_cents: priceCents,
         list_price_cents: listCents,
-        currency: pricing.currency ?? existing.currency ?? null,
+        currency,
         discount_pct: discountPct,
         category: "media",
         media_type: opts.mediaType,
@@ -1081,6 +1195,12 @@ async function bootstrapFromTrackedAsins(opts: {
       lookbackDays: opts.historyLookbackDays,
       includeAllTimeFallback: true,
     });
+    const historyLatestByAsin = await loadLatestPriceSnapshots({
+      supabase: opts.supabase,
+      asins: chunk,
+      lookbackHours: 72,
+      includeAllTimeFallback: true,
+    });
 
     for (const asin of chunk) {
       const tracked = trackedByAsin.get(asin);
@@ -1093,10 +1213,21 @@ async function bootstrapFromTrackedAsins(opts: {
       if (!itemMatchesMediaType(opts.mediaType, item, tracked.title ?? existing?.title ?? null)) continue;
 
       const pricing = extractCurrentPricing(item);
-      const priceCents = pricing.priceCents;
+      let priceCents = pricing.priceCents;
+      let listCents = pricing.listCents ?? existing?.list_price_cents ?? null;
+      let currency = pricing.currency ?? existing?.currency ?? null;
+
+      if (priceCents == null) {
+        const historyLatest = historyLatestByAsin.get(asin);
+        if (historyLatest) {
+          priceCents = historyLatest.price_cents;
+          listCents = listCents ?? historyLatest.list_price_cents;
+          currency = currency ?? historyLatest.currency;
+        }
+      }
+
       if (priceCents == null) continue;
 
-      let listCents = pricing.listCents ?? existing?.list_price_cents ?? null;
       let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
 
       const historyBaseline = historyBaselineByAsin.get(asin) ?? null;
@@ -1132,7 +1263,7 @@ async function bootstrapFromTrackedAsins(opts: {
         amazon_url: tracked.amazon_url ?? buildAmazonUrl(asin),
         price_cents: priceCents,
         list_price_cents: listCents,
-        currency: pricing.currency ?? existing?.currency ?? null,
+        currency,
         discount_pct: discountPct,
         category: "media",
         media_type: opts.mediaType,
@@ -1187,6 +1318,10 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     Math.max(Number(url.searchParams.get("requestBudgetMs") ?? "90000"), 20000),
     170000
   );
+  const bootstrapReserveMs = Math.min(
+    Math.max(Number(url.searchParams.get("bootstrapReserveMs") ?? "25000"), 5000),
+    Math.floor(requestBudgetMs * 0.6)
+  );
   const historyLookbackDays = Math.max(
     7,
     Math.min(Number(url.searchParams.get("historyLookbackDays") ?? "120"), 365)
@@ -1223,6 +1358,10 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
   const requestStartedAtMs = Date.now();
   const requestElapsedMs = () => Date.now() - requestStartedAtMs;
   const budgetExceeded = () => requestElapsedMs() >= requestBudgetMs;
+  const searchBudgetExceeded =
+    mode === "discount"
+      ? () => requestElapsedMs() >= requestBudgetMs - bootstrapReserveMs
+      : budgetExceeded;
   let stoppedEarlyReason: string | null = null;
 
   const seen = new Set<string>();
@@ -1241,6 +1380,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     maxPages,
     delayMs,
     request_budget_ms: requestBudgetMs,
+    bootstrap_reserve_ms: bootstrapReserveMs,
     history_lookback_days: historyLookbackDays,
     bootstrap_limit: bootstrapLimit,
     bootstrap_offset: bootstrapOffset,
@@ -1258,6 +1398,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     fallback_existing_list_used: 0,
     fallback_existing_discount_used: 0,
     fallback_history_baseline_used: 0,
+    fallback_history_price_used: 0,
     pricing_refetched_getitems: 0,
     tracked_asins_upserted: 0,
     kept: 0,
@@ -1364,7 +1505,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       const pagesForThisKeyword = Math.min(Math.max(maxPages, 1), MAX_ITEMPAGE);
 
       for (let page = 1; page <= pagesForThisKeyword; page++) {
-        if (budgetExceeded()) {
+        if (searchBudgetExceeded()) {
           stoppedEarlyReason = "request_budget_exceeded_during_search";
           break keywordLoop;
         }
@@ -1429,7 +1570,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           stats.getitems_chunks_requested += pricingChunks.length;
 
           for (const chunk of pricingChunks) {
-            if (budgetExceeded()) {
+            if (searchBudgetExceeded()) {
               stoppedEarlyReason = "request_budget_exceeded_during_getitems_pricing";
               break;
             }
@@ -1482,17 +1623,33 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
         stats.pricing_refetched_getitems =
           (stats.pricing_refetched_getitems ?? 0) + refetchedWithGetItems;
 
+        const historyLatestByAsin = await loadLatestPriceSnapshots({
+          supabase,
+          asins: candidateAsins,
+          lookbackHours: 72,
+          includeAllTimeFallback: true,
+        });
+
         for (const asin of candidateAsins) {
           const item = searchItemByAsin.get(asin);
           if (!item) continue;
 
           const existing = existingDealsByAsin.get(asin);
           const pricing = pricingByAsin.get(asin) ?? extractCurrentPricing(item);
-          const priceCents = pricing.priceCents;
+          let priceCents = pricing.priceCents;
+
+          const historyLatest = historyLatestByAsin.get(asin);
+          if (priceCents == null && historyLatest) {
+            priceCents = historyLatest.price_cents;
+            stats.fallback_history_price_used += 1;
+          }
 
           if (priceCents == null) continue;
 
           let listCents = pricing.listCents ?? existing?.list_price_cents ?? null;
+          if (listCents == null && historyLatest) {
+            listCents = historyLatest.list_price_cents ?? null;
+          }
           let discountPct = pricing.discountPct ?? computeDiscountPct(priceCents, listCents);
 
           const historyBaseline = historyBaselineByAsin.get(asin) ?? null;
