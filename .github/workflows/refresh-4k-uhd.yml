@@ -12,7 +12,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 30
     steps:
       - name: Refresh 4k-uhd
         env:
@@ -32,12 +32,46 @@ jobs:
           echo "BASE: $BASE"
 
           echo "Revalidating active $TYPE deals..."
-          revalidate_url="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&revalidateOnly=1&activeIncludeAll=1&activeLimit=300&activeOffset=0"
-          if ! curl -sS --fail-with-body \
-            --connect-timeout 20 \
-            --max-time 420 \
-            "$revalidate_url"; then
-            echo "ERROR: 4k revalidate call failed"
+          REVALIDATE_LIMIT=60
+          REVALIDATE_TOTAL=360
+          revalidate_offset=0
+          revalidate_calls=0
+          revalidate_success=0
+
+          while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
+            revalidate_calls=$((revalidate_calls + 1))
+            revalidate_url="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&revalidateOnly=1&activeIncludeAll=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}"
+            echo "Revalidate offset=$revalidate_offset limit=$REVALIDATE_LIMIT"
+
+            ok=0
+            for i in 1 2; do
+              set +e
+              RESP=$(curl -sS --fail-with-body \
+                --connect-timeout 20 \
+                --max-time 180 \
+                "$revalidate_url")
+              CODE=$?
+              set -e
+              if [ $CODE -eq 0 ]; then
+                echo "$RESP"
+                ok=1
+                revalidate_success=$((revalidate_success + 1))
+                break
+              fi
+              echo "Revalidate call failed (code=$CODE, attempt=$i). Sleeping..."
+              sleep $((8 * i))
+            done
+
+            if [ $ok -eq 0 ]; then
+              echo "WARNING: revalidate chunk failed (offset=$revalidate_offset)."
+            fi
+
+            revalidate_offset=$((revalidate_offset + REVALIDATE_LIMIT))
+            sleep 1
+          done
+
+          if [ $revalidate_success -eq 0 ]; then
+            echo "ERROR: all 4k revalidate calls failed"
             exit 1
           fi
 
