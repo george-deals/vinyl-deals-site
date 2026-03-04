@@ -12,7 +12,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Refresh 4k-uhd
         env:
@@ -30,15 +30,16 @@ jobs:
 
           echo "Refreshing: $TYPE"
           echo "BASE: $BASE"
+          echo "WORKFLOW_REV=4k-debug-v2"
 
           # 4K debug mode: discovery only (revalidation disabled while we stabilize runtime)
           PER_RUN=4
-          TOTAL=36
+          TOTAL=24
           MAXPAGES=1
-          BOOTSTRAP_LIMIT=20
-          REQUEST_BUDGET_MS=25000
-          BOOTSTRAP_RESERVE_MS=8000
-          CURL_MAX_TIME=75
+          BOOTSTRAP_LIMIT=10
+          REQUEST_BUDGET_MS=18000
+          BOOTSTRAP_RESERVE_MS=5000
+          CURL_MAX_TIME=60
           MAX_ATTEMPTS=1
 
           fails=0
