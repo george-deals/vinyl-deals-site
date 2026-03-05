@@ -30,12 +30,12 @@ jobs:
 
           echo "Refreshing: $TYPE"
           echo "BASE: $BASE"
-          echo "WORKFLOW_REV=4k-debug-v3"
+          echo "WORKFLOW_REV=4k-debug-v4"
 
           # Phase 1: bounded active revalidation (keeps stale prices from staying live)
-          REVALIDATE_TOTAL=120
-          REVALIDATE_LIMIT=30
-          REVALIDATE_REQUEST_BUDGET_MS=22000
+          REVALIDATE_TOTAL=300
+          REVALIDATE_LIMIT=50
+          REVALIDATE_REQUEST_BUDGET_MS=24000
           REVALIDATE_CURL_MAX_TIME=75
           REVALIDATE_MAX_ATTEMPTS=1
 
@@ -46,7 +46,7 @@ jobs:
           revalidate_failures=0
 
           while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
-            RURL="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&revalidateOnly=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}&requestBudgetMs=${REVALIDATE_REQUEST_BUDGET_MS}&maxPages=1&delayMs=0"
+            RURL="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&revalidateOnly=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}&activeIncludeAll=1&requestBudgetMs=${REVALIDATE_REQUEST_BUDGET_MS}&maxPages=1&delayMs=0"
             echo "Revalidate offset=$revalidate_offset limit=$REVALIDATE_LIMIT"
 
             r_ok=0

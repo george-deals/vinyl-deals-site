@@ -242,27 +242,66 @@ function itemMatchesMediaType(
   return true;
 }
 
+function getOfferListings(item: any): any[] {
+  const offers = item?.Offers ?? item?.OffersV2 ?? item?.Offer ?? null;
+  if (!offers) return [];
+
+  const raw = offers?.Listings ?? offers?.ListingsV2 ?? offers?.Listing ?? null;
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === "object") return Object.values(raw);
+  return [];
+}
+
+function getOfferSummaries(item: any): any[] {
+  const offers = item?.Offers ?? item?.OffersV2 ?? item?.Offer ?? null;
+  if (!offers) return [];
+
+  const raw = offers?.Summaries ?? offers?.SummariesV2 ?? offers?.Summary ?? null;
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === "object") return Object.values(raw);
+  return [];
+}
+
+function firstDefinedPriceCents(...candidates: any[]): number | null {
+  for (const c of candidates) {
+    const cents = toCentsFromPriceObj(c);
+    if (cents != null) return cents;
+  }
+  return null;
+}
+
 function pickBuyBoxListingOnly(item: any) {
-  const listings: any[] = item?.Offers?.Listings ?? [];
+  const listings = getOfferListings(item);
   if (!listings.length) return null;
 
-  const buyBox = listings.find((l) => l?.IsBuyBoxWinner);
-  const candidate = buyBox ?? listings.find((l) => toCentsFromPriceObj(l?.Price));
+  const buyBox = listings.find((l: any) => l?.IsBuyBoxWinner === true || l?.IsBuyBoxWinner === "true");
+  const candidate =
+    buyBox ??
+    listings.find((l: any) =>
+      firstDefinedPriceCents(l?.Price, l?.OfferPrice, l?.BuyingPrice, l?.PriceInfo?.Price, l?.PriceInfo)
+    );
+
   if (!candidate) return null;
 
-  const priceCents = toCentsFromPriceObj(candidate?.Price);
+  const priceCents = firstDefinedPriceCents(
+    candidate?.Price,
+    candidate?.OfferPrice,
+    candidate?.BuyingPrice,
+    candidate?.PriceInfo?.Price,
+    candidate?.PriceInfo
+  );
   if (!priceCents) return null;
 
   return candidate;
 }
 
 function pickOfferSummary(item: any) {
-  const summaries: any[] = item?.Offers?.Summaries ?? [];
+  const summaries = getOfferSummaries(item);
   if (!summaries.length) return null;
 
   const summaryForNew =
     summaries.find(
-      (s) => String(s?.Condition?.Value ?? s?.Condition?.DisplayValue ?? "").toLowerCase() === "new"
+      (s: any) => String(s?.Condition?.Value ?? s?.Condition?.DisplayValue ?? "").toLowerCase() === "new"
     ) ?? summaries[0];
 
   return summaryForNew ?? null;
@@ -272,10 +311,18 @@ function extractCurrentPricing(item: any): CurrentPricing {
   const listing = pickBuyBoxListingOnly(item);
   const summary = pickOfferSummary(item);
 
-  const summaryLow = toCentsFromPriceObj(summary?.LowestPrice);
-  const summaryHigh = toCentsFromPriceObj(summary?.HighestPrice);
-  const summaryCurrency = summary?.LowestPrice?.Currency ?? summary?.HighestPrice?.Currency ?? null;
-  const listFromProductInfo = toCentsFromPriceObj(item?.ItemInfo?.ProductInfo?.ListPrice);
+  const summaryLow = firstDefinedPriceCents(summary?.LowestPrice, summary?.Price, summary?.MinPrice);
+  const summaryHigh = firstDefinedPriceCents(summary?.HighestPrice, summary?.ListPrice, summary?.MaxPrice);
+  const summaryCurrency =
+    summary?.LowestPrice?.Currency ??
+    summary?.HighestPrice?.Currency ??
+    summary?.Price?.Currency ??
+    summary?.ListPrice?.Currency ??
+    null;
+  const listFromProductInfo = firstDefinedPriceCents(
+    item?.ItemInfo?.ProductInfo?.ListPrice,
+    item?.ItemInfo?.ProductInfo?.UnitPrice
+  );
 
   if (!listing && summaryLow == null) {
     return {
@@ -287,7 +334,15 @@ function extractCurrentPricing(item: any): CurrentPricing {
     };
   }
 
-  const priceCents = toCentsFromPriceObj(listing?.Price) ?? summaryLow;
+  const priceCents =
+    firstDefinedPriceCents(
+      listing?.Price,
+      listing?.OfferPrice,
+      listing?.BuyingPrice,
+      listing?.PriceInfo?.Price,
+      listing?.PriceInfo
+    ) ?? summaryLow;
+
   if (priceCents == null) {
     return {
       priceCents: null,
@@ -298,10 +353,24 @@ function extractCurrentPricing(item: any): CurrentPricing {
     };
   }
 
-  const listFromBasis =
-    toCentsFromPriceObj(listing?.SavingBasis) ?? toCentsFromPriceObj(listing?.ListPrice) ?? listFromProductInfo;
-  const savingsPct = Number(listing?.Price?.Savings?.Percentage);
-  const savingsAmt = toCentsFromPriceObj(listing?.Price?.Savings);
+  const listFromBasis = firstDefinedPriceCents(
+    listing?.SavingBasis,
+    listing?.ListPrice,
+    listing?.Price?.SavingBasis,
+    listing?.Price?.ListPrice,
+    listing?.PriceInfo?.SavingBasis,
+    listing?.PriceInfo?.ListPrice,
+    listFromProductInfo
+  );
+
+  const savingsPct = Number(
+    listing?.Price?.Savings?.Percentage ?? listing?.Savings?.Percentage ?? listing?.PriceInfo?.Savings?.Percentage
+  );
+  const savingsAmt = firstDefinedPriceCents(
+    listing?.Price?.Savings,
+    listing?.Savings,
+    listing?.PriceInfo?.Savings
+  );
 
   const listCents =
     listFromBasis ??
@@ -325,7 +394,12 @@ function extractCurrentPricing(item: any): CurrentPricing {
   return {
     priceCents,
     listCents,
-    currency: listing?.Price?.Currency ?? summaryCurrency,
+    currency:
+      listing?.Price?.Currency ??
+      listing?.OfferPrice?.Currency ??
+      listing?.BuyingPrice?.Currency ??
+      listing?.PriceInfo?.Price?.Currency ??
+      summaryCurrency,
     discountPct,
     hadDiscountSignal,
   };
