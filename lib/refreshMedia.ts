@@ -106,13 +106,23 @@ function computeDiscountPct(priceCents: number, listCents: number | null): numbe
   return Math.round(((listCents - priceCents) / listCents) * 1000) / 10;
 }
 
-function parseDiscountBucketFloor(v: any): number | null {
+function parseDiscountBucketEstimate(v: any): number | null {
   if (typeof v !== "string") return null;
-  const nums = v.match(/\d+(?:\.\d+)?/g);
-  if (!nums?.length) return null;
-  const floor = Number(nums[0]);
-  if (!Number.isFinite(floor) || floor < 0 || floor > 95) return null;
-  return floor;
+
+  const nums = (v.match(/\d+(?:\.\d+)?/g) ?? [])
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n) && n >= 0 && n <= 95);
+
+  if (!nums.length) return null;
+
+  if (nums.length >= 2) {
+    const low = Math.min(nums[0], nums[1]);
+    const high = Math.max(nums[0], nums[1]);
+    return Math.round(((low + high) / 2) * 10) / 10;
+  }
+
+  const single = nums[0];
+  return Math.round(single * 10) / 10;
 }
 
 function sleep(ms: number) {
@@ -1680,7 +1690,10 @@ async function bootstrapFromBucketedDeals(opts: {
   existingDealsByAsin: Map<string, ExistingDealSnapshot>;
   supabase: any;
 }) {
-  const scanLimit = Math.max(opts.limit * 60, 3000);
+  const scanWindow = 1000;
+  const pageIndex = Math.max(0, Math.floor(opts.offset / Math.max(1, opts.limit)));
+  const scanStart = pageIndex * 200;
+  const scanEnd = scanStart + scanWindow - 1;
 
   const selectCols =
     "asin,title,image_url,price_cents,list_price_cents,currency,discount_pct,discount_bucket,sales_rank,updated_at,media_type";
@@ -1689,11 +1702,23 @@ async function bootstrapFromBucketedDeals(opts: {
     .from("deals_bucketed")
     .select(selectCols)
     .order("updated_at", { ascending: false })
-    .limit(scanLimit);
+    .range(scanStart, scanEnd);
 
   if (error) throw new Error(error.message);
 
-  const allRows = data ?? [];
+  let allRows = data ?? [];
+
+  if (!allRows.length && scanStart > 0) {
+    const { data: wrapData, error: wrapError } = await opts.supabase
+      .from("deals_bucketed")
+      .select(selectCols)
+      .order("updated_at", { ascending: false })
+      .range(0, scanWindow - 1);
+
+    if (!wrapError) {
+      allRows = wrapData ?? [];
+    }
+  }
   const candidatePool: any[] = [];
   const seenCandidates = new Set<string>();
 
@@ -1761,8 +1786,8 @@ async function bootstrapFromBucketedDeals(opts: {
     }
 
     if (discountPct == null || discountPct < opts.minDiscount) {
-      const bucketFloor = parseDiscountBucketFloor(row?.discount_bucket);
-      if (bucketFloor != null && bucketFloor >= opts.minDiscount) discountPct = bucketFloor;
+      const bucketEstimate = parseDiscountBucketEstimate(row?.discount_bucket);
+      if (bucketEstimate != null && bucketEstimate >= opts.minDiscount) discountPct = bucketEstimate;
     }
 
     if (discountPct == null || discountPct < opts.minDiscount) {
