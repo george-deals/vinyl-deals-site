@@ -2368,8 +2368,22 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       }
     }
 
+    const preferBucketedRecoveryFor4k =
+      config.media_type === "4k-uhd" &&
+      Number(stats.candidate_items_with_price ?? 0) === 0 &&
+      Number(stats.getitems_items_with_price ?? 0) === 0;
+
     if (mode === "discount" && keep.length === 0) {
-      if (budgetExceeded()) {
+      if (preferBucketedRecoveryFor4k) {
+        stats.bootstrap_from_existing = {
+          skipped: true,
+          reason: "prefer_bucketed_recovery_4k_no_live_pricing",
+        };
+        stats.bootstrap_from_tracked = {
+          skipped: true,
+          reason: "prefer_bucketed_recovery_4k_no_live_pricing",
+        };
+      } else if (budgetExceeded()) {
         const historyBootstrap = await bootstrapFromExistingHistoryOnly({
           mediaType: config.media_type,
           feedKey,
