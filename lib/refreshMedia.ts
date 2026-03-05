@@ -1597,27 +1597,50 @@ async function bootstrapFromBucketedDeals(opts: {
   existingDealsByAsin: Map<string, ExistingDealSnapshot>;
   supabase: any;
 }) {
-  const { data, error } = await opts.supabase
-    .from("deals_bucketed")
-    .select(
-      "asin,title,image_url,price_cents,list_price_cents,currency,discount_pct,sales_rank,updated_at"
-    )
-    .eq("media_type", opts.mediaType)
-    .gte("discount_pct", opts.minDiscount)
-    .order("updated_at", { ascending: false })
-    .range(opts.offset, opts.offset + opts.limit - 1);
+  const windowSize = Math.max(opts.limit * 6, 120);
+  const start = Math.max(0, opts.offset);
+  const end = start + windowSize - 1;
 
-  if (error) throw new Error(error.message);
+  const selectCols =
+    "asin,title,image_url,price_cents,list_price_cents,currency,discount_pct,sales_rank,updated_at,media_type";
+
+  const primary = await opts.supabase
+    .from("deals_bucketed")
+    .select(selectCols)
+    .order("updated_at", { ascending: false })
+    .range(start, end);
+
+  if (primary.error) throw new Error(primary.error.message);
+
+  let candidates = primary.data ?? [];
+
+  if (!candidates.length && start > 0) {
+    const wrap = await opts.supabase
+      .from("deals_bucketed")
+      .select(selectCols)
+      .order("updated_at", { ascending: false })
+      .range(0, windowSize - 1);
+
+    if (!wrap.error) {
+      candidates = wrap.data ?? [];
+    }
+  }
 
   const rows: DealRow[] = [];
   const seen = new Set<string>();
 
-  for (const row of data ?? []) {
+  for (const row of candidates) {
     const asin = row?.asin ? String(row.asin) : "";
     if (!asin || seen.has(asin)) continue;
-    seen.add(asin);
 
     const existing = opts.existingDealsByAsin.get(asin);
+
+    const rowMedia = normalizeText(row?.media_type);
+    const titleText = normalizeText(row?.title ?? existing?.title ?? "");
+
+    if (opts.mediaType === "4k-uhd") {
+      if (!(rowMedia === "4k-uhd" || titleLooks4k(titleText))) continue;
+    }
 
     const rawPrice = Number(row?.price_cents);
     if (!Number.isFinite(rawPrice) || rawPrice <= 0) continue;
@@ -1635,6 +1658,16 @@ async function bootstrapFromBucketedDeals(opts: {
     if (!Number.isFinite(discountPct)) discountPct = null;
     if (discountPct == null) discountPct = computeDiscountPct(priceCents, listCents);
 
+    if (
+      discountPct == null &&
+      existing?.discount_pct != null &&
+      existing.discount_pct >= opts.minDiscount &&
+      existing.price_cents != null &&
+      priceCents <= existing.price_cents
+    ) {
+      discountPct = existing.discount_pct;
+    }
+
     if (discountPct == null || !Number.isFinite(discountPct) || discountPct < opts.minDiscount) continue;
 
     if (listCents != null && listCents <= priceCents) {
@@ -1642,6 +1675,7 @@ async function bootstrapFromBucketedDeals(opts: {
     }
 
     const rankRaw = Number(row?.sales_rank);
+
     rows.push({
       asin,
       title: row?.title ?? existing?.title ?? asin,
@@ -1662,10 +1696,13 @@ async function bootstrapFromBucketedDeals(opts: {
       last_seen_at: opts.now,
       sync_id: opts.syncId,
     });
+
+    seen.add(asin);
+    if (rows.length >= opts.limit) break;
   }
 
   return {
-    attempted_rows: (data ?? []).length,
+    attempted_rows: candidates.length,
     rows,
   };
 }
