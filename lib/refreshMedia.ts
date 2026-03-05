@@ -499,7 +499,6 @@ async function paapiSearch({
     SearchIndex: searchIndex,
     ItemCount: ITEM_COUNT,
     ItemPage: itemPage,
-    Condition: "New",
     PartnerTag: partnerTag,
     PartnerType: "Associates",
     Resources: [
@@ -551,7 +550,6 @@ async function paapiGetItems(asins: string[]) {
   const body = {
     ItemIds: asins,
     ItemIdType: "ASIN",
-    Condition: "New",
     PartnerTag: partnerTag,
     PartnerType: "Associates",
     Resources: [

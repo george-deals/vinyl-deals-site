@@ -30,13 +30,13 @@ jobs:
 
           echo "Refreshing: $TYPE"
           echo "BASE: $BASE"
-          echo "WORKFLOW_REV=4k-debug-v4"
+          echo "WORKFLOW_REV=4k-debug-v5"
 
           # Phase 1: bounded active revalidation (keeps stale prices from staying live)
-          REVALIDATE_TOTAL=300
-          REVALIDATE_LIMIT=50
-          REVALIDATE_REQUEST_BUDGET_MS=24000
-          REVALIDATE_CURL_MAX_TIME=75
+          REVALIDATE_TOTAL=100
+          REVALIDATE_LIMIT=25
+          REVALIDATE_REQUEST_BUDGET_MS=26000
+          REVALIDATE_CURL_MAX_TIME=90
           REVALIDATE_MAX_ATTEMPTS=1
 
           echo "Revalidating active $TYPE deals..."
@@ -89,7 +89,7 @@ jobs:
             fi
 
             revalidate_offset=$((revalidate_offset + REVALIDATE_LIMIT))
-            sleep 2
+            sleep 5
           done
 
           if [ $revalidate_calls -gt 0 ] && [ $revalidate_success -eq 0 ]; then
