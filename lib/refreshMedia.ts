@@ -1600,7 +1600,7 @@ async function bootstrapFromBucketedDeals(opts: {
   const { data, error } = await opts.supabase
     .from("deals_bucketed")
     .select(
-      "asin,title,image_url,price_cents,list_price_cents,currency,discount_pct,sales_rank,browse_node_id,updated_at"
+      "asin,title,image_url,price_cents,list_price_cents,currency,discount_pct,sales_rank,updated_at"
     )
     .eq("media_type", opts.mediaType)
     .gte("discount_pct", opts.minDiscount)
@@ -1642,8 +1642,6 @@ async function bootstrapFromBucketedDeals(opts: {
     }
 
     const rankRaw = Number(row?.sales_rank);
-    const browseNodeRaw = Number(row?.browse_node_id);
-
     rows.push({
       asin,
       title: row?.title ?? existing?.title ?? asin,
@@ -1659,7 +1657,7 @@ async function bootstrapFromBucketedDeals(opts: {
       feed_key: opts.feedKey,
       sales_rank: Number.isFinite(rankRaw) ? Math.round(rankRaw) : null,
       genre: null,
-      browse_node_id: Number.isFinite(browseNodeRaw) ? Math.round(browseNodeRaw) : null,
+      browse_node_id: null,
       updated_at: opts.now,
       last_seen_at: opts.now,
       sync_id: opts.syncId,
