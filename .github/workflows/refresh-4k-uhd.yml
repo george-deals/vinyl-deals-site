@@ -30,9 +30,73 @@ jobs:
 
           echo "Refreshing: $TYPE"
           echo "BASE: $BASE"
-          echo "WORKFLOW_REV=4k-debug-v2"
+          echo "WORKFLOW_REV=4k-debug-v3"
 
-          # 4K debug mode: discovery only (revalidation disabled while we stabilize runtime)
+          # Phase 1: bounded active revalidation (keeps stale prices from staying live)
+          REVALIDATE_TOTAL=120
+          REVALIDATE_LIMIT=30
+          REVALIDATE_REQUEST_BUDGET_MS=22000
+          REVALIDATE_CURL_MAX_TIME=75
+          REVALIDATE_MAX_ATTEMPTS=1
+
+          echo "Revalidating active $TYPE deals..."
+          revalidate_offset=0
+          revalidate_calls=0
+          revalidate_success=0
+          revalidate_failures=0
+
+          while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
+            RURL="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&revalidateOnly=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}&requestBudgetMs=${REVALIDATE_REQUEST_BUDGET_MS}&maxPages=1&delayMs=0"
+            echo "Revalidate offset=$revalidate_offset limit=$REVALIDATE_LIMIT"
+
+            r_ok=0
+            r_attempt=1
+            while [ $r_attempt -le $REVALIDATE_MAX_ATTEMPTS ]; do
+              echo "Revalidate attempt $r_attempt/$REVALIDATE_MAX_ATTEMPTS..."
+              set +e
+              RRESP=$(curl -sS --fail-with-body --connect-timeout 15 --max-time ${REVALIDATE_CURL_MAX_TIME} "$RURL")
+              RCODE=$?
+              set -e
+
+              if [ $RCODE -eq 0 ]; then
+                echo "$RRESP"
+                r_ok=1
+                break
+              fi
+
+              echo "Revalidate curl failed (code=$RCODE)."
+              r_attempt=$((r_attempt + 1))
+              sleep 2
+            done
+
+            revalidate_calls=$((revalidate_calls + 1))
+
+            if [ $r_ok -eq 0 ]; then
+              revalidate_failures=$((revalidate_failures + 1))
+            else
+              revalidate_success=$((revalidate_success + 1))
+
+              attempted=$(echo "$RRESP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(Number(j?.revalidate_active?.attempted_asins ?? 0));}catch{console.log(0);}})')
+              updatedDiscounted=$(echo "$RRESP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(Number(j?.revalidate_active?.updated_discounted ?? 0));}catch{console.log(0);}})')
+              updatedInvalid=$(echo "$RRESP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(Number(j?.revalidate_active?.updated_invalid ?? 0));}catch{console.log(0);}})')
+
+              echo "Revalidate attempted=${attempted} updated_discounted=${updatedDiscounted} updated_invalid=${updatedInvalid}"
+
+              if [ "$attempted" -eq 0 ]; then
+                echo "No more active rows to revalidate in this window."
+                break
+              fi
+            fi
+
+            revalidate_offset=$((revalidate_offset + REVALIDATE_LIMIT))
+            sleep 2
+          done
+
+          if [ $revalidate_calls -gt 0 ] && [ $revalidate_success -eq 0 ]; then
+            echo "WARNING: all revalidate calls failed; continuing to discovery."
+          fi
+
+          # Phase 2: discovery loop
           PER_RUN=4
           TOTAL=24
           MAXPAGES=1
