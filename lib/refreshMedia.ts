@@ -106,6 +106,15 @@ function computeDiscountPct(priceCents: number, listCents: number | null): numbe
   return Math.round(((listCents - priceCents) / listCents) * 1000) / 10;
 }
 
+function parseDiscountBucketFloor(v: any): number | null {
+  if (typeof v !== "string") return null;
+  const nums = v.match(/\d+(?:\.\d+)?/g);
+  if (!nums?.length) return null;
+  const floor = Number(nums[0]);
+  if (!Number.isFinite(floor) || floor < 0 || floor > 95) return null;
+  return floor;
+}
+
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -1597,69 +1606,78 @@ async function bootstrapFromBucketedDeals(opts: {
   existingDealsByAsin: Map<string, ExistingDealSnapshot>;
   supabase: any;
 }) {
-  const windowSize = Math.max(opts.limit * 6, 120);
-  const start = Math.max(0, opts.offset);
-  const end = start + windowSize - 1;
+  const scanLimit = Math.max(opts.limit * 60, 3000);
 
   const selectCols =
-    "asin,title,image_url,price_cents,list_price_cents,currency,discount_pct,sales_rank,updated_at,media_type";
+    "asin,title,image_url,price_cents,list_price_cents,currency,discount_pct,discount_bucket,sales_rank,updated_at,media_type";
 
-  const primary = await opts.supabase
+  const { data, error } = await opts.supabase
     .from("deals_bucketed")
     .select(selectCols)
     .order("updated_at", { ascending: false })
-    .range(start, end);
+    .limit(scanLimit);
 
-  if (primary.error) throw new Error(primary.error.message);
+  if (error) throw new Error(error.message);
 
-  let candidates = primary.data ?? [];
+  const allRows = data ?? [];
+  const candidatePool: any[] = [];
+  const seenCandidates = new Set<string>();
 
-  if (!candidates.length && start > 0) {
-    const wrap = await opts.supabase
-      .from("deals_bucketed")
-      .select(selectCols)
-      .order("updated_at", { ascending: false })
-      .range(0, windowSize - 1);
-
-    if (!wrap.error) {
-      candidates = wrap.data ?? [];
-    }
-  }
-
-  const rows: DealRow[] = [];
-  const seen = new Set<string>();
-
-  for (const row of candidates) {
+  for (const row of allRows) {
     const asin = row?.asin ? String(row.asin) : "";
-    if (!asin || seen.has(asin)) continue;
+    if (!asin || seenCandidates.has(asin)) continue;
+    seenCandidates.add(asin);
 
     const existing = opts.existingDealsByAsin.get(asin);
-
     const rowMedia = normalizeText(row?.media_type);
     const titleText = normalizeText(row?.title ?? existing?.title ?? "");
 
     if (opts.mediaType === "4k-uhd") {
-      if (!(rowMedia === "4k-uhd" || titleLooks4k(titleText))) continue;
+      const likely4k = rowMedia === "4k-uhd" || titleLooks4k(titleText) || Boolean(existing);
+      if (!likely4k) continue;
     }
 
-    const rawPrice = Number(row?.price_cents);
-    if (!Number.isFinite(rawPrice) || rawPrice <= 0) continue;
+    candidatePool.push(row);
+  }
+
+  if (!candidatePool.length) {
+    return {
+      attempted_rows: allRows.length,
+      candidate_rows: 0,
+      rows: [] as DealRow[],
+    };
+  }
+
+  const startIndex = candidatePool.length ? opts.offset % candidatePool.length : 0;
+  const ordered = candidatePool.slice(startIndex).concat(candidatePool.slice(0, startIndex));
+
+  const rows: DealRow[] = [];
+
+  for (const row of ordered) {
+    const asin = row?.asin ? String(row.asin) : "";
+    if (!asin) continue;
+
+    const existing = opts.existingDealsByAsin.get(asin);
+
+    const rowPrice = Number(row?.price_cents);
+    const existingPrice = Number(existing?.price_cents ?? 0);
+    const rawPrice = Number.isFinite(rowPrice) && rowPrice > 0 ? rowPrice : Number.isFinite(existingPrice) && existingPrice > 0 ? existingPrice : null;
+    if (rawPrice == null) continue;
     const priceCents = Math.round(rawPrice);
 
-    const rawList = Number(row?.list_price_cents);
-    const listFromBucketed = Number.isFinite(rawList) && rawList > 0 ? Math.round(rawList) : null;
-    const listFromExisting =
-      existing?.list_price_cents != null && Number(existing.list_price_cents) > 0
-        ? Math.round(Number(existing.list_price_cents))
-        : null;
+    const rowList = Number(row?.list_price_cents);
+    const existingList = Number(existing?.list_price_cents ?? 0);
+    const listFromBucketed = Number.isFinite(rowList) && rowList > 0 ? Math.round(rowList) : null;
+    const listFromExisting = Number.isFinite(existingList) && existingList > 0 ? Math.round(existingList) : null;
     let listCents = listFromBucketed ?? listFromExisting ?? null;
 
     let discountPct: number | null = Number(row?.discount_pct);
     if (!Number.isFinite(discountPct)) discountPct = null;
+
     if (discountPct == null) discountPct = computeDiscountPct(priceCents, listCents);
 
     if (
-      discountPct == null &&
+      (discountPct == null || discountPct < opts.minDiscount) &&
       existing?.discount_pct != null &&
       existing.discount_pct >= opts.minDiscount &&
       existing.price_cents != null &&
@@ -1668,10 +1686,34 @@ async function bootstrapFromBucketedDeals(opts: {
       discountPct = existing.discount_pct;
     }
 
+    if (discountPct == null || discountPct < opts.minDiscount) {
+      const bucketFloor = parseDiscountBucketFloor(row?.discount_bucket);
+      if (bucketFloor != null && bucketFloor >= opts.minDiscount) discountPct = bucketFloor;
+    }
+
+    if (discountPct == null || discountPct < opts.minDiscount) {
+      const existingBaseline = Math.max(
+        Number(existing?.list_price_cents ?? 0),
+        Number(existing?.price_cents ?? 0)
+      );
+      if (Number.isFinite(existingBaseline) && existingBaseline > priceCents) {
+        const computed = computeDiscountPct(priceCents, Math.round(existingBaseline));
+        if (computed != null) {
+          discountPct = computed;
+          if ((listCents ?? 0) < existingBaseline) listCents = Math.round(existingBaseline);
+        }
+      }
+    }
+
     if (discountPct == null || !Number.isFinite(discountPct) || discountPct < opts.minDiscount) continue;
 
     if (listCents != null && listCents <= priceCents) {
       listCents = null;
+    }
+
+    if (listCents == null && discountPct > 0 && discountPct < 100) {
+      const inferredList = Math.round(priceCents / (1 - discountPct / 100));
+      if (Number.isFinite(inferredList) && inferredList > priceCents) listCents = inferredList;
     }
 
     const rankRaw = Number(row?.sales_rank);
@@ -1697,12 +1739,12 @@ async function bootstrapFromBucketedDeals(opts: {
       sync_id: opts.syncId,
     });
 
-    seen.add(asin);
     if (rows.length >= opts.limit) break;
   }
 
   return {
-    attempted_rows: candidates.length,
+    attempted_rows: allRows.length,
+    candidate_rows: candidatePool.length,
     rows,
   };
 }
@@ -2398,6 +2440,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
         stats.bootstrap_from_bucketed = {
           attempted_rows: bucketedBootstrap.attempted_rows,
+          candidate_rows: bucketedBootstrap.candidate_rows,
           rows_returned: bucketedBootstrap.rows.length,
           kept: keptFromBucketed,
           offset: bootstrapOffset,
