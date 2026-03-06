@@ -2373,6 +2373,13 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       Number(stats.candidate_items_with_price ?? 0) === 0 &&
       Number(stats.getitems_items_with_price ?? 0) === 0;
 
+    if (preferBucketedRecoveryFor4k && keep.length > 0) {
+      stats.discarded_keep_without_live_pricing = keep.length;
+      keep.length = 0;
+      seen.clear();
+      stats.kept = 0;
+    }
+
     if (mode === "discount" && keep.length === 0) {
       if (preferBucketedRecoveryFor4k) {
         stats.bootstrap_from_existing = {
