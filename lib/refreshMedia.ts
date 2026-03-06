@@ -157,6 +157,23 @@ function addDiscountBandCount(
   bucket[toDiscountBand(discountPct)] += 1;
 }
 
+function isAssociateNotEligibleError(err: any): boolean {
+  const code = String(err?.code ?? err?.Code ?? err?.error?.code ?? "").toLowerCase();
+  const message = String(err?.message ?? err?.Message ?? err?.error?.message ?? "").toLowerCase();
+  return (
+    code === "associatenoteligible" ||
+    message.includes("does not currently meet the eligibility requirements to access the product advertising api")
+  );
+}
+
+function containsAssociateNotEligible(value: any): boolean {
+  if (value == null) return false;
+  if (isAssociateNotEligibleError(value)) return true;
+  if (Array.isArray(value)) return value.some((v) => containsAssociateNotEligible(v));
+  if (typeof value === "object") return Object.values(value).some((v) => containsAssociateNotEligible(v));
+  return false;
+}
+
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -1711,6 +1728,192 @@ async function bootstrapFromExistingHistoryOnly(opts: {
   };
 }
 
+async function bootstrapFromTrackedHistoryPool(opts: {
+  mediaType: MediaConfig["media_type"];
+  feedKey: string;
+  minDiscount: number;
+  limit: number;
+  offset: number;
+  now: string;
+  syncId: string;
+  historyLookbackDays: number;
+  existingDealsByAsin: Map<string, ExistingDealSnapshot>;
+  supabase: any;
+}) {
+  const scanWindow = 1200;
+
+  const { data, error } = await opts.supabase
+    .from("tracked_asins")
+    .select("asin,title,artist,image_url,amazon_url,last_seen_at")
+    .eq("media_type", opts.mediaType)
+    .eq("is_active", true)
+    .order("last_seen_at", { ascending: false })
+    .range(0, scanWindow - 1);
+
+  if (error) throw new Error(error.message);
+
+  const trackedByAsin = new Map<string, any>();
+  for (const row of data ?? []) {
+    const asin = row?.asin ? String(row.asin) : "";
+    if (!asin || trackedByAsin.has(asin)) continue;
+    trackedByAsin.set(asin, row);
+  }
+
+  const asins = Array.from(trackedByAsin.keys());
+  const candidateDiscountBands = createDiscountBandCounts();
+  const keptDiscountBands = createDiscountBandCounts();
+  if (!asins.length) {
+    return {
+      attempted_rows: 0,
+      candidate_rows: 0,
+      candidate_discount_bands: candidateDiscountBands,
+      kept_discount_bands: keptDiscountBands,
+      rows: [] as DealRow[],
+    };
+  }
+
+  const historyLatestByAsin = await loadLatestPriceSnapshots({
+    supabase: opts.supabase,
+    asins,
+    lookbackHours: 24 * 30,
+    includeAllTimeFallback: true,
+  });
+
+  const historyBaselineByAsin = await loadRecentPriceBaselines({
+    supabase: opts.supabase,
+    asins,
+    lookbackDays: opts.historyLookbackDays,
+    includeAllTimeFallback: true,
+  });
+
+  const bucketedByAsin =
+    opts.mediaType === "4k-uhd"
+      ? await loadBucketedSnapshots({
+          supabase: opts.supabase,
+          asins,
+          mediaType: opts.mediaType,
+        })
+      : new Map<string, {
+          price_cents: number | null;
+          list_price_cents: number | null;
+          currency: string | null;
+          discount_pct: number | null;
+          title: string | null;
+          image_url: string | null;
+        }>();
+
+  const candidates: Array<{
+    asin: string;
+    title: string;
+    artist: string | null;
+    image_url: string | null;
+    amazon_url: string;
+    price_cents: number;
+    list_price_cents: number;
+    currency: string | null;
+    discount_pct: number;
+    updated_at_ms: number;
+  }> = [];
+
+  for (const asin of asins) {
+    const tracked = trackedByAsin.get(asin);
+    const existing = opts.existingDealsByAsin.get(asin);
+    const bucketed = bucketedByAsin.get(asin);
+    const latest = historyLatestByAsin.get(asin);
+
+    if (!latest?.price_cents || latest.price_cents <= 0) continue;
+    const priceCents = Math.round(latest.price_cents);
+
+    const listCandidates = [
+      Number(latest.list_price_cents ?? 0),
+      Number(historyBaselineByAsin.get(asin) ?? 0),
+      Number(bucketed?.list_price_cents ?? 0),
+      Number(bucketed?.price_cents ?? 0),
+      Number(existing?.list_price_cents ?? 0),
+      Number(existing?.price_cents ?? 0),
+    ].filter((v) => Number.isFinite(v) && v > priceCents) as number[];
+
+    if (!listCandidates.length) continue;
+    const listCents = Math.round(Math.max(...listCandidates));
+
+    const discountPct = computeDiscountPct(priceCents, listCents);
+    if (discountPct == null || discountPct < opts.minDiscount) continue;
+
+    const updatedAtMs = Number.isFinite(Date.parse(String(tracked?.last_seen_at ?? "")))
+      ? Date.parse(String(tracked?.last_seen_at))
+      : 0;
+
+    candidates.push({
+      asin,
+      title: tracked?.title ?? existing?.title ?? bucketed?.title ?? asin,
+      artist: tracked?.artist ?? existing?.artist ?? null,
+      image_url: tracked?.image_url ?? existing?.image_url ?? bucketed?.image_url ?? null,
+      amazon_url: tracked?.amazon_url ?? buildAmazonUrl(asin),
+      price_cents: priceCents,
+      list_price_cents: listCents,
+      currency: latest?.currency ?? bucketed?.currency ?? existing?.currency ?? null,
+      discount_pct: discountPct,
+      updated_at_ms: updatedAtMs,
+    });
+
+    addDiscountBandCount(candidateDiscountBands, discountPct);
+  }
+
+  if (!candidates.length) {
+    return {
+      attempted_rows: asins.length,
+      candidate_rows: 0,
+      candidate_discount_bands: candidateDiscountBands,
+      kept_discount_bands: keptDiscountBands,
+      rows: [] as DealRow[],
+    };
+  }
+
+  candidates.sort((a, b) => {
+    if (b.discount_pct !== a.discount_pct) return b.discount_pct - a.discount_pct;
+    if (b.updated_at_ms !== a.updated_at_ms) return b.updated_at_ms - a.updated_at_ms;
+    return a.asin.localeCompare(b.asin);
+  });
+
+  const startIndex = opts.offset % candidates.length;
+  const ordered = candidates.slice(startIndex).concat(candidates.slice(0, startIndex));
+
+  const rows: DealRow[] = [];
+  for (const c of ordered) {
+    rows.push({
+      asin: c.asin,
+      title: c.title,
+      artist: c.artist,
+      image_url: c.image_url,
+      amazon_url: c.amazon_url,
+      price_cents: c.price_cents,
+      list_price_cents: c.list_price_cents,
+      currency: c.currency,
+      discount_pct: Math.round(c.discount_pct * 10) / 10,
+      category: "media",
+      media_type: opts.mediaType,
+      feed_key: opts.feedKey,
+      sales_rank: null,
+      genre: null,
+      browse_node_id: null,
+      updated_at: opts.now,
+      last_seen_at: opts.now,
+      sync_id: opts.syncId,
+    });
+
+    addDiscountBandCount(keptDiscountBands, c.discount_pct);
+    if (rows.length >= opts.limit) break;
+  }
+
+  return {
+    attempted_rows: asins.length,
+    candidate_rows: candidates.length,
+    candidate_discount_bands: candidateDiscountBands,
+    kept_discount_bands: keptDiscountBands,
+    rows,
+  };
+}
+
 async function bootstrapFromBucketedDeals(opts: {
   mediaType: MediaConfig["media_type"];
   feedKey: string;
@@ -1994,7 +2197,10 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     active_include_all: activeIncludeAll,
     bootstrap_from_existing: null as any,
     bootstrap_from_tracked: null as any,
+    bootstrap_from_history_pool: null as any,
     bootstrap_from_bucketed: null as any,
+    paapi_associate_not_eligible: false,
+    paapi_associate_not_eligible_hits: 0,
   };
 
   const supabase = getSupabaseAdmin();
@@ -2059,6 +2265,10 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
         stats.revalidate_active = { ok: false, error: e?.message ?? String(e) };
       }
 
+      if (containsAssociateNotEligible(stats.revalidate_active)) {
+        stats.paapi_associate_not_eligible = true;
+      }
+
       if (revalidateOnly) {
         if (runId) {
           try {
@@ -2104,7 +2314,14 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             paapiSearch({ keyword: kw, itemPage: page, searchIndex: config.searchIndex })
           );
         } catch (e: any) {
-          errors.push({ keyword: kw, page, error: extractAxiosError(e) });
+          const paapiErr = extractAxiosError(e);
+          errors.push({ keyword: kw, page, error: paapiErr });
+          if (isAssociateNotEligibleError(paapiErr)) {
+            stats.paapi_associate_not_eligible = true;
+            stats.paapi_associate_not_eligible_hits += 1;
+            stoppedEarlyReason = "paapi_associate_not_eligible";
+            break keywordLoop;
+          }
           break;
         }
 
@@ -2166,7 +2383,12 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             try {
               fullItems = await withRetry(() => paapiGetItems(chunk));
             } catch (e: any) {
-              errors.push({ asins: chunk, error: extractAxiosError(e) });
+              const paapiErr = extractAxiosError(e);
+              errors.push({ asins: chunk, error: paapiErr });
+              if (isAssociateNotEligibleError(paapiErr)) {
+                stats.paapi_associate_not_eligible = true;
+                stats.paapi_associate_not_eligible_hits += 1;
+              }
               continue;
             }
 
@@ -2387,6 +2609,10 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       }
     }
 
+    if (!stats.paapi_associate_not_eligible && containsAssociateNotEligible(errors)) {
+      stats.paapi_associate_not_eligible = true;
+    }
+
     const preferBucketedRecoveryFor4k =
       config.media_type === "4k-uhd" &&
       Number(stats.candidate_items_with_price ?? 0) === 0 &&
@@ -2547,6 +2773,57 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             reason: "existing_bootstrap_returned_rows",
           };
         }
+      }
+    }
+
+    if (
+      mode === "discount" &&
+      keep.length === 0 &&
+      config.media_type === "4k-uhd" &&
+      stats.paapi_associate_not_eligible
+    ) {
+      try {
+        const historyPoolBootstrap = await bootstrapFromTrackedHistoryPool({
+          mediaType: config.media_type,
+          feedKey,
+          minDiscount,
+          limit: bootstrapLimit,
+          offset: bootstrapOffset,
+          now,
+          syncId,
+          historyLookbackDays,
+          existingDealsByAsin,
+          supabase,
+        });
+
+        let keptFromHistoryPool = 0;
+        if (historyPoolBootstrap.rows.length) {
+          for (const row of historyPoolBootstrap.rows) {
+            if (seen.has(row.asin)) continue;
+            keep.push(row);
+            seen.add(row.asin);
+            stats.kept += 1;
+            stats.fallback_history_price_used += 1;
+            keptFromHistoryPool += 1;
+          }
+        }
+
+        stats.bootstrap_from_history_pool = {
+          attempted_rows: historyPoolBootstrap.attempted_rows,
+          candidate_rows: historyPoolBootstrap.candidate_rows,
+          candidate_discount_bands: historyPoolBootstrap.candidate_discount_bands,
+          kept_discount_bands: historyPoolBootstrap.kept_discount_bands,
+          rows_returned: historyPoolBootstrap.rows.length,
+          kept: keptFromHistoryPool,
+          offset: bootstrapOffset,
+          limit: bootstrapLimit,
+          reason: "history_pool_recovery_after_paapi_ineligible",
+        };
+      } catch (e: any) {
+        stats.bootstrap_from_history_pool = {
+          ok: false,
+          error: e?.message ?? String(e),
+        };
       }
     }
 
