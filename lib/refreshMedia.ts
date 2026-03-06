@@ -1924,21 +1924,42 @@ async function bootstrapFromBucketedDeals(opts: {
   syncId: string;
   existingDealsByAsin: Map<string, ExistingDealSnapshot>;
   supabase: any;
+  preferDiscountDiversity?: boolean;
 }) {
-  const scanWindow = 5000;
+  const baseScanWindow = 5000;
+  const highDiscountScanWindow = 5000;
 
   const selectCols =
     "asin,title,image_url,price_cents,list_price_cents,currency,discount_pct,discount_bucket,sales_rank,updated_at,media_type";
 
-  const { data, error } = await opts.supabase
+  const recentQuery = opts.supabase
     .from("deals_bucketed")
     .select(selectCols)
+    .eq("media_type", opts.mediaType)
+    .gte("discount_pct", opts.minDiscount)
     .order("updated_at", { ascending: false })
-    .range(0, scanWindow - 1);
+    .range(0, baseScanWindow - 1);
 
-  if (error) throw new Error(error.message);
+  const { data: recentRows, error: recentError } = await recentQuery;
+  if (recentError) throw new Error(recentError.message);
 
-  const allRows = data ?? [];
+  let allRows = recentRows ?? [];
+
+  if (opts.preferDiscountDiversity) {
+    const { data: highRows, error: highError } = await opts.supabase
+      .from("deals_bucketed")
+      .select(selectCols)
+      .eq("media_type", opts.mediaType)
+      .gte("discount_pct", Math.max(opts.minDiscount, 20))
+      .order("discount_pct", { ascending: false })
+      .order("updated_at", { ascending: false })
+      .range(0, highDiscountScanWindow - 1);
+
+    if (highError) throw new Error(highError.message);
+    if ((highRows ?? []).length) {
+      allRows = [...(highRows ?? []), ...allRows];
+    }
+  }
   const candidatePool: Array<{
     asin: string;
     title: string;
@@ -1962,13 +1983,6 @@ async function bootstrapFromBucketedDeals(opts: {
     seenCandidates.add(asin);
 
     const existing = opts.existingDealsByAsin.get(asin);
-    const rowMedia = normalizeText(row?.media_type);
-    const titleText = normalizeText(row?.title ?? existing?.title ?? "");
-
-    if (opts.mediaType === "4k-uhd") {
-      const likely4k = rowMedia === "4k-uhd" || titleLooks4k(titleText) || Boolean(existing);
-      if (!likely4k) continue;
-    }
 
     const rowPrice = Number(row?.price_cents);
     if (!Number.isFinite(rowPrice) || rowPrice <= 0) continue;
@@ -2839,6 +2853,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           syncId,
           existingDealsByAsin,
           supabase,
+          preferDiscountDiversity: Boolean(stats.paapi_associate_not_eligible),
         });
 
         let keptFromBucketed = 0;
