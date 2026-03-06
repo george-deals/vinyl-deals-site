@@ -125,6 +125,38 @@ function parseDiscountBucketEstimate(v: any): number | null {
   return Math.round(single * 10) / 10;
 }
 
+function normalizeDiscountPct(v: any): number | null {
+  const raw = Number(v);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+
+  let normalized = raw;
+  if (normalized > 0 && normalized < 1) normalized = normalized * 100;
+  if (normalized > 100 && normalized <= 1000) normalized = normalized / 10;
+  if (normalized <= 0 || normalized > 100) return null;
+
+  return Math.round(normalized * 10) / 10;
+}
+
+function toDiscountBand(discountPct: number): "15_20" | "20_30" | "30_40" | "40_50" | "50_plus" {
+  if (discountPct >= 50) return "50_plus";
+  if (discountPct >= 40) return "40_50";
+  if (discountPct >= 30) return "30_40";
+  if (discountPct >= 20) return "20_30";
+  return "15_20";
+}
+
+function createDiscountBandCounts() {
+  return { "15_20": 0, "20_30": 0, "30_40": 0, "40_50": 0, "50_plus": 0 };
+}
+
+function addDiscountBandCount(
+  bucket: ReturnType<typeof createDiscountBandCounts>,
+  discountPct: number | null
+) {
+  if (discountPct == null || !Number.isFinite(discountPct)) return;
+  bucket[toDiscountBand(discountPct)] += 1;
+}
+
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -925,7 +957,7 @@ async function revalidateActiveDeals(opts: {
       price_cents: row.price_cents ?? null,
       list_price_cents: row.list_price_cents ?? null,
       currency: row.currency ?? null,
-      discount_pct: row.discount_pct == null ? null : Number(row.discount_pct),
+      discount_pct: normalizeDiscountPct(row.discount_pct),
     });
   }
 
@@ -1716,6 +1748,8 @@ async function bootstrapFromBucketedDeals(opts: {
     updated_at_ms: number;
     existing: ExistingDealSnapshot | undefined;
   }> = [];
+  const candidateDiscountBands = createDiscountBandCounts();
+  const selectedDiscountBands = createDiscountBandCounts();
 
   const seenCandidates = new Set<string>();
 
@@ -1734,40 +1768,16 @@ async function bootstrapFromBucketedDeals(opts: {
     }
 
     const rowPrice = Number(row?.price_cents);
-    const existingPrice = Number(existing?.price_cents ?? 0);
-    const rawPrice =
-      Number.isFinite(rowPrice) && rowPrice > 0
-        ? rowPrice
-        : Number.isFinite(existingPrice) && existingPrice > 0
-          ? existingPrice
-          : null;
-    if (rawPrice == null) continue;
-    const priceCents = Math.round(rawPrice);
+    if (!Number.isFinite(rowPrice) || rowPrice <= 0) continue;
+    const priceCents = Math.round(rowPrice);
 
     const rowList = Number(row?.list_price_cents);
-    const existingList = Number(existing?.list_price_cents ?? 0);
-    let listCents =
-      Number.isFinite(rowList) && rowList > 0
-        ? Math.round(rowList)
-        : Number.isFinite(existingList) && existingList > 0
-          ? Math.round(existingList)
-          : null;
+    let listCents = Number.isFinite(rowList) && rowList > 0 ? Math.round(rowList) : null;
 
-    let discountPct: number | null = Number(row?.discount_pct);
-    if (!Number.isFinite(discountPct)) discountPct = null;
+    let discountPct: number | null = normalizeDiscountPct(row?.discount_pct);
 
     if (discountPct == null) discountPct = parseDiscountBucketEstimate(row?.discount_bucket);
     if (discountPct == null) discountPct = computeDiscountPct(priceCents, listCents);
-
-    if (
-      (discountPct == null || discountPct < opts.minDiscount) &&
-      existing?.discount_pct != null &&
-      existing.discount_pct >= opts.minDiscount &&
-      existing.price_cents != null &&
-      priceCents <= existing.price_cents
-    ) {
-      discountPct = existing.discount_pct;
-    }
 
     if (discountPct == null || !Number.isFinite(discountPct) || discountPct < opts.minDiscount) continue;
 
@@ -1797,12 +1807,15 @@ async function bootstrapFromBucketedDeals(opts: {
       updated_at_ms: updatedAtMs,
       existing,
     });
+    addDiscountBandCount(candidateDiscountBands, discountPct);
   }
 
   if (!candidatePool.length) {
     return {
       attempted_rows: allRows.length,
       candidate_rows: 0,
+      candidate_discount_bands: candidateDiscountBands,
+      kept_discount_bands: selectedDiscountBands,
       rows: [] as DealRow[],
     };
   }
@@ -1838,6 +1851,7 @@ async function bootstrapFromBucketedDeals(opts: {
       last_seen_at: opts.now,
       sync_id: opts.syncId,
     });
+    addDiscountBandCount(selectedDiscountBands, c.discount_pct);
 
     if (rows.length >= opts.limit) break;
   }
@@ -1845,6 +1859,8 @@ async function bootstrapFromBucketedDeals(opts: {
   return {
     attempted_rows: allRows.length,
     candidate_rows: candidatePool.length,
+    candidate_discount_bands: candidateDiscountBands,
+    kept_discount_bands: selectedDiscountBands,
     rows,
   };
 }
@@ -2001,7 +2017,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
         price_cents: row.price_cents ?? null,
         list_price_cents: row.list_price_cents ?? null,
         currency: row.currency ?? null,
-        discount_pct: row.discount_pct == null ? null : Number(row.discount_pct),
+        discount_pct: normalizeDiscountPct(row.discount_pct),
       });
     }
   } catch {}
@@ -2288,8 +2304,24 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           }
 
           if (mode === "discount") {
+            const bucketedDiscountPct = normalizeDiscountPct(bucketed?.discount_pct);
+
             if (
-              discountPct == null &&
+              (discountPct == null || discountPct < minDiscount) &&
+              bucketedDiscountPct != null &&
+              bucketedDiscountPct >= minDiscount &&
+              bucketed?.price_cents != null &&
+              priceCents <= bucketed.price_cents
+            ) {
+              discountPct = bucketedDiscountPct;
+              stats.fallback_bucketed_discount_used += 1;
+              if ((bucketed.list_price_cents ?? 0) > (listCents ?? 0)) {
+                listCents = bucketed.list_price_cents;
+              }
+            }
+
+            if (
+              (discountPct == null || discountPct < minDiscount) &&
               existing?.discount_pct != null &&
               existing.discount_pct >= minDiscount &&
               existing.price_cents != null &&
@@ -2297,20 +2329,6 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             ) {
               discountPct = existing.discount_pct;
               stats.fallback_existing_discount_used += 1;
-            }
-
-            if (
-              discountPct == null &&
-              bucketed?.discount_pct != null &&
-              bucketed.discount_pct >= minDiscount &&
-              bucketed.price_cents != null &&
-              priceCents <= bucketed.price_cents
-            ) {
-              discountPct = bucketed.discount_pct;
-              stats.fallback_bucketed_discount_used += 1;
-              if ((bucketed.list_price_cents ?? 0) > (listCents ?? 0)) {
-                listCents = bucketed.list_price_cents;
-              }
             }
 
             if (discountPct === null) continue;
@@ -2562,6 +2580,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
         stats.bootstrap_from_bucketed = {
           attempted_rows: bucketedBootstrap.attempted_rows,
           candidate_rows: bucketedBootstrap.candidate_rows,
+          candidate_discount_bands: bucketedBootstrap.candidate_discount_bands,
+          kept_discount_bands: bucketedBootstrap.kept_discount_bands,
           rows_returned: bucketedBootstrap.rows.length,
           kept: keptFromBucketed,
           offset: bootstrapOffset,
