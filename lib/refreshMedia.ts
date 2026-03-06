@@ -1690,10 +1690,7 @@ async function bootstrapFromBucketedDeals(opts: {
   existingDealsByAsin: Map<string, ExistingDealSnapshot>;
   supabase: any;
 }) {
-  const scanWindow = 1000;
-  const pageIndex = Math.max(0, Math.floor(opts.offset / Math.max(1, opts.limit)));
-  const scanStart = pageIndex * 200;
-  const scanEnd = scanStart + scanWindow - 1;
+  const scanWindow = 5000;
 
   const selectCols =
     "asin,title,image_url,price_cents,list_price_cents,currency,discount_pct,discount_bucket,sales_rank,updated_at,media_type";
@@ -1702,24 +1699,24 @@ async function bootstrapFromBucketedDeals(opts: {
     .from("deals_bucketed")
     .select(selectCols)
     .order("updated_at", { ascending: false })
-    .range(scanStart, scanEnd);
+    .range(0, scanWindow - 1);
 
   if (error) throw new Error(error.message);
 
-  let allRows = data ?? [];
+  const allRows = data ?? [];
+  const candidatePool: Array<{
+    asin: string;
+    title: string;
+    image_url: string | null;
+    price_cents: number;
+    list_price_cents: number | null;
+    currency: string | null;
+    discount_pct: number;
+    sales_rank: number | null;
+    updated_at_ms: number;
+    existing: ExistingDealSnapshot | undefined;
+  }> = [];
 
-  if (!allRows.length && scanStart > 0) {
-    const { data: wrapData, error: wrapError } = await opts.supabase
-      .from("deals_bucketed")
-      .select(selectCols)
-      .order("updated_at", { ascending: false })
-      .range(0, scanWindow - 1);
-
-    if (!wrapError) {
-      allRows = wrapData ?? [];
-    }
-  }
-  const candidatePool: any[] = [];
   const seenCandidates = new Set<string>();
 
   for (const row of allRows) {
@@ -1736,43 +1733,30 @@ async function bootstrapFromBucketedDeals(opts: {
       if (!likely4k) continue;
     }
 
-    candidatePool.push(row);
-  }
-
-  if (!candidatePool.length) {
-    return {
-      attempted_rows: allRows.length,
-      candidate_rows: 0,
-      rows: [] as DealRow[],
-    };
-  }
-
-  const startIndex = candidatePool.length ? opts.offset % candidatePool.length : 0;
-  const ordered = candidatePool.slice(startIndex).concat(candidatePool.slice(0, startIndex));
-
-  const rows: DealRow[] = [];
-
-  for (const row of ordered) {
-    const asin = row?.asin ? String(row.asin) : "";
-    if (!asin) continue;
-
-    const existing = opts.existingDealsByAsin.get(asin);
-
     const rowPrice = Number(row?.price_cents);
     const existingPrice = Number(existing?.price_cents ?? 0);
-    const rawPrice = Number.isFinite(rowPrice) && rowPrice > 0 ? rowPrice : Number.isFinite(existingPrice) && existingPrice > 0 ? existingPrice : null;
+    const rawPrice =
+      Number.isFinite(rowPrice) && rowPrice > 0
+        ? rowPrice
+        : Number.isFinite(existingPrice) && existingPrice > 0
+          ? existingPrice
+          : null;
     if (rawPrice == null) continue;
     const priceCents = Math.round(rawPrice);
 
     const rowList = Number(row?.list_price_cents);
     const existingList = Number(existing?.list_price_cents ?? 0);
-    const listFromBucketed = Number.isFinite(rowList) && rowList > 0 ? Math.round(rowList) : null;
-    const listFromExisting = Number.isFinite(existingList) && existingList > 0 ? Math.round(existingList) : null;
-    let listCents = listFromBucketed ?? listFromExisting ?? null;
+    let listCents =
+      Number.isFinite(rowList) && rowList > 0
+        ? Math.round(rowList)
+        : Number.isFinite(existingList) && existingList > 0
+          ? Math.round(existingList)
+          : null;
 
     let discountPct: number | null = Number(row?.discount_pct);
     if (!Number.isFinite(discountPct)) discountPct = null;
 
+    if (discountPct == null) discountPct = parseDiscountBucketEstimate(row?.discount_bucket);
     if (discountPct == null) discountPct = computeDiscountPct(priceCents, listCents);
 
     if (
@@ -1785,52 +1769,69 @@ async function bootstrapFromBucketedDeals(opts: {
       discountPct = existing.discount_pct;
     }
 
-    if (discountPct == null || discountPct < opts.minDiscount) {
-      const bucketEstimate = parseDiscountBucketEstimate(row?.discount_bucket);
-      if (bucketEstimate != null && bucketEstimate >= opts.minDiscount) discountPct = bucketEstimate;
-    }
-
-    if (discountPct == null || discountPct < opts.minDiscount) {
-      const existingBaseline = Math.max(
-        Number(existing?.list_price_cents ?? 0),
-        Number(existing?.price_cents ?? 0)
-      );
-      if (Number.isFinite(existingBaseline) && existingBaseline > priceCents) {
-        const computed = computeDiscountPct(priceCents, Math.round(existingBaseline));
-        if (computed != null) {
-          discountPct = computed;
-          if ((listCents ?? 0) < existingBaseline) listCents = Math.round(existingBaseline);
-        }
-      }
-    }
-
     if (discountPct == null || !Number.isFinite(discountPct) || discountPct < opts.minDiscount) continue;
+
+    if ((listCents == null || listCents <= priceCents) && discountPct > 0 && discountPct < 100) {
+      const inferredList = Math.round(priceCents / (1 - discountPct / 100));
+      if (Number.isFinite(inferredList) && inferredList > priceCents) listCents = inferredList;
+    }
 
     if (listCents != null && listCents <= priceCents) {
       listCents = null;
     }
 
-    if (listCents == null && discountPct > 0 && discountPct < 100) {
-      const inferredList = Math.round(priceCents / (1 - discountPct / 100));
-      if (Number.isFinite(inferredList) && inferredList > priceCents) listCents = inferredList;
-    }
-
     const rankRaw = Number(row?.sales_rank);
+    const updatedAtMs = Number.isFinite(Date.parse(String(row?.updated_at ?? "")))
+      ? Date.parse(String(row?.updated_at))
+      : 0;
 
-    rows.push({
+    candidatePool.push({
       asin,
       title: row?.title ?? existing?.title ?? asin,
-      artist: existing?.artist ?? null,
       image_url: row?.image_url ?? existing?.image_url ?? null,
-      amazon_url: buildAmazonUrl(asin),
       price_cents: priceCents,
       list_price_cents: listCents,
       currency: row?.currency ?? existing?.currency ?? null,
       discount_pct: Math.round(discountPct * 10) / 10,
+      sales_rank: Number.isFinite(rankRaw) ? Math.round(rankRaw) : null,
+      updated_at_ms: updatedAtMs,
+      existing,
+    });
+  }
+
+  if (!candidatePool.length) {
+    return {
+      attempted_rows: allRows.length,
+      candidate_rows: 0,
+      rows: [] as DealRow[],
+    };
+  }
+
+  candidatePool.sort((a, b) => {
+    if (b.discount_pct !== a.discount_pct) return b.discount_pct - a.discount_pct;
+    if (b.updated_at_ms !== a.updated_at_ms) return b.updated_at_ms - a.updated_at_ms;
+    return a.asin.localeCompare(b.asin);
+  });
+
+  const startIndex = opts.offset % candidatePool.length;
+  const ordered = candidatePool.slice(startIndex).concat(candidatePool.slice(0, startIndex));
+
+  const rows: DealRow[] = [];
+  for (const c of ordered) {
+    rows.push({
+      asin: c.asin,
+      title: c.title,
+      artist: c.existing?.artist ?? null,
+      image_url: c.image_url,
+      amazon_url: buildAmazonUrl(c.asin),
+      price_cents: c.price_cents,
+      list_price_cents: c.list_price_cents,
+      currency: c.currency,
+      discount_pct: c.discount_pct,
       category: "media",
       media_type: opts.mediaType,
       feed_key: opts.feedKey,
-      sales_rank: Number.isFinite(rankRaw) ? Math.round(rankRaw) : null,
+      sales_rank: c.sales_rank,
       genre: null,
       browse_node_id: null,
       updated_at: opts.now,
