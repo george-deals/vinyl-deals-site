@@ -2190,6 +2190,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     getitems_chunks_requested: 0,
     getitems_items_returned: 0,
     getitems_items_with_price: 0,
+    getitems_items_with_offer_payload: 0,
+    getitems_items_without_offer_payload: 0,
     skipped_already_attempted_asin: 0,
     items_with_discount_data: 0,
     filtered_under_min_discount: 0,
@@ -2428,6 +2430,14 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
               const full = fullByAsin.get(asin);
               if (!full) continue;
 
+              const fullListings = getOfferListings(full);
+              const fullSummaries = getOfferSummaries(full);
+              if (fullListings.length || fullSummaries.length) {
+                stats.getitems_items_with_offer_payload += 1;
+              } else {
+                stats.getitems_items_without_offer_payload += 1;
+              }
+
               const fullPricing = extractCurrentPricing(full);
               if (fullPricing.priceCents != null) {
                 pricingByAsin.set(asin, fullPricing);
@@ -2646,7 +2656,10 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
     if (degradedNoLivePricing) {
       stats.degraded_no_live_pricing = true;
-      stats.degraded_reason = "items_returned_without_live_getitems_pricing";
+      stats.degraded_reason =
+        Number(stats.getitems_items_without_offer_payload ?? 0) > 0
+          ? "items_returned_without_offer_payload"
+          : "items_returned_without_live_getitems_pricing";
       if (!stoppedEarlyReason) {
         stoppedEarlyReason = "degraded_no_live_pricing";
       }
