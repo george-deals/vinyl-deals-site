@@ -30,7 +30,7 @@ jobs:
 
           echo "Refreshing: $TYPE"
           echo "BASE: $BASE"
-          echo "WORKFLOW_REV=4k-debug-v5"
+          echo "WORKFLOW_REV=4k-debug-v6"
 
           # Phase 1: bounded active revalidation (keeps stale prices from staying live)
           REVALIDATE_TOTAL=25
@@ -102,8 +102,8 @@ jobs:
           fi
 
           # Phase 2: discovery loop
-          PER_RUN=4
-          TOTAL=24
+          PER_RUN=1
+          TOTAL=12
           MAXPAGES=1
           BOOTSTRAP_LIMIT=10
           REQUEST_BUDGET_MS=18000
@@ -115,6 +115,7 @@ jobs:
           successes=0
           chunks=0
           offset=0
+          stop_discovery=0
 
           while [ $offset -lt $TOTAL ]; do
             URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}&bootstrapReserveMs=${BOOTSTRAP_RESERVE_MS}&historyLookbackDays=365"
@@ -139,14 +140,18 @@ jobs:
 
               if [ -n "${RESP:-}" ] && echo "$RESP" | grep -q "degraded_no_live_pricing"; then
                 echo "$RESP"
-                echo "Detected degraded no-live-pricing state; stopping further chunks."
-                exit 1
+                echo "Detected degraded no-live-pricing state; stopping discovery with warning."
+                ok=1
+                stop_discovery=1
+                break
               fi
 
               if [ -n "${RESP:-}" ] && echo "$RESP" | grep -q "AssociateNotEligible"; then
                 echo "$RESP"
-                echo "Detected AssociateNotEligible; stopping further chunks."
-                exit 1
+                echo "Detected AssociateNotEligible; stopping discovery with warning."
+                ok=1
+                stop_discovery=1
+                break
               fi
 
               attempt=$((attempt + 1))
@@ -161,8 +166,12 @@ jobs:
               successes=$((successes + 1))
             fi
 
+            if [ $stop_discovery -eq 1 ]; then
+              break
+            fi
+
             offset=$((offset + PER_RUN))
-            sleep 1
+            sleep 5
           done
 
           if [ $successes -eq 0 ]; then
@@ -172,6 +181,10 @@ jobs:
 
           if [ $fails -gt 0 ]; then
             echo "Completed with partial failures: $fails of $chunks chunk(s) failed."
+          fi
+
+          if [ $stop_discovery -eq 1 ]; then
+            echo "Discovery stopped early due to degraded PA-API responses."
           fi
 
           echo "Done."
