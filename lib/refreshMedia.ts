@@ -1986,7 +1986,6 @@ async function bootstrapFromBucketedDeals(opts: {
     .from("deals_bucketed")
     .select(selectCols)
     .eq("media_type", opts.mediaType)
-    .gte("discount_pct", opts.minDiscount)
     .order("updated_at", { ascending: false })
     .range(0, baseScanWindow - 1);
 
