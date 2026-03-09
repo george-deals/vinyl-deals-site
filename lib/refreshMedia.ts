@@ -1870,11 +1870,19 @@ async function bootstrapFromTrackedHistoryPool(opts: {
     const bucketed = bucketedByAsin.get(asin);
     const latest = historyLatestByAsin.get(asin);
 
-    if (!latest?.price_cents || latest.price_cents <= 0) continue;
-    const priceCents = Math.round(latest.price_cents);
+    const latestPrice = Number(latest?.price_cents ?? 0);
+    const bucketedPrice = Number(bucketed?.price_cents ?? 0);
+    const existingPrice = Number(existing?.price_cents ?? 0);
+
+    const priceCandidates = [latestPrice, bucketedPrice, existingPrice].filter(
+      (v) => Number.isFinite(v) && v > 0
+    ) as number[];
+
+    if (!priceCandidates.length) continue;
+    const priceCents = Math.round(priceCandidates[0]);
 
     const listCandidates = [
-      Number(latest.list_price_cents ?? 0),
+      Number(latest?.list_price_cents ?? 0),
       Number(historyBaselineByAsin.get(asin) ?? 0),
       Number(bucketed?.list_price_cents ?? 0),
       Number(bucketed?.price_cents ?? 0),
