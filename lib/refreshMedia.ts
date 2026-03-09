@@ -2547,7 +2547,12 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           if (pricing.priceCents == null && pricing.listCents != null) {
             stats.candidate_items_with_product_list_price += 1;
           }
-          if (mode === "discount" || pricing.priceCents == null) asinsForGetItems.push(asin);
+
+          const needsGetItemsPricing =
+            mode === "discount"
+              ? pricing.priceCents == null || pricing.discountPct == null
+              : pricing.priceCents == null;
+          if (needsGetItemsPricing) asinsForGetItems.push(asin);
         }
 
         let refetchedWithGetItems = 0;
@@ -2828,7 +2833,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       config.media_type === "4k-uhd" &&
       mode === "discount" &&
       Number(stats.items_returned ?? 0) > 0 &&
-      Number(stats.getitems_items_with_price ?? 0) === 0;
+      Number(stats.getitems_items_with_price ?? 0) === 0 &&
+      Number(stats.candidate_items_with_price ?? 0) === 0;
 
     if (degradedNoLivePricing) {
       stats.degraded_no_live_pricing = true;
