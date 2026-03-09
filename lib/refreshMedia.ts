@@ -2186,8 +2186,15 @@ async function bootstrapFromBucketedDeals(opts: {
     return a.asin.localeCompare(b.asin);
   });
 
-  const startIndex = opts.offset % candidatePool.length;
-  const ordered = candidatePool.slice(startIndex).concat(candidatePool.slice(0, startIndex));
+  const higherBandCandidates = countHigherDiscountBandCandidates(candidateDiscountBands);
+  const prioritizeHigherBands = Boolean(opts.preferDiscountDiversity) && higherBandCandidates > 0;
+
+  const ordered = prioritizeHigherBands
+    ? candidatePool
+    : (() => {
+        const startIndex = opts.offset % candidatePool.length;
+        return candidatePool.slice(startIndex).concat(candidatePool.slice(0, startIndex));
+      })();
 
   const rows: DealRow[] = [];
   for (const c of ordered) {
@@ -3088,7 +3095,11 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             syncId,
             existingDealsByAsin,
             supabase,
-            preferDiscountDiversity: Boolean(stats.paapi_associate_not_eligible || degradedNoLivePricing),
+            preferDiscountDiversity: Boolean(
+              stats.paapi_associate_not_eligible ||
+                degradedNoLivePricing ||
+                Number(stats.items_returned ?? 0) === 0
+            ),
             historyLookbackDays,
           });
 
