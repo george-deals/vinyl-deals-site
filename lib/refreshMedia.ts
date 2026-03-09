@@ -2163,6 +2163,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
   let stoppedEarlyReason: string | null = null;
 
   const seen = new Set<string>();
+  const attemptedAsins = new Set<string>();
   const keep: DealRow[] = [];
   const errors: any[] = [];
   const trackedSnapshots = new Map<string, TrackedAsinSnapshot>();
@@ -2189,6 +2190,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     getitems_chunks_requested: 0,
     getitems_items_returned: 0,
     getitems_items_with_price: 0,
+    skipped_already_attempted_asin: 0,
     items_with_discount_data: 0,
     filtered_under_min_discount: 0,
     filtered_over_max_price: 0,
@@ -2215,6 +2217,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     bootstrap_from_bucketed: null as any,
     paapi_associate_not_eligible: false,
     paapi_associate_not_eligible_hits: 0,
+    degraded_no_live_pricing: false,
+    degraded_reason: null as string | null,
   };
 
   const supabase = getSupabaseAdmin();
@@ -2359,7 +2363,13 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
         for (const item of items) {
           const asin = item?.ASIN ? String(item.ASIN) : "";
-          if (!asin || seen.has(asin) || searchItemByAsin.has(asin)) continue;
+
+          if (!asin) continue;
+          if (attemptedAsins.has(asin)) {
+            stats.skipped_already_attempted_asin += 1;
+            continue;
+          }
+          if (seen.has(asin) || searchItemByAsin.has(asin)) continue;
 
           if (!itemMatchesMediaType(config.media_type, item)) {
             stats.filtered_wrong_media += 1;
@@ -2369,6 +2379,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           const trackedSnapshot = buildTrackedSnapshot(item);
           if (trackedSnapshot) trackedSnapshots.set(trackedSnapshot.asin, trackedSnapshot);
 
+          attemptedAsins.add(asin);
           candidateAsins.push(asin);
           stats.candidate_items_considered += 1;
           searchItemByAsin.set(asin, item);
@@ -2627,6 +2638,20 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       stats.paapi_associate_not_eligible = true;
     }
 
+    const degradedNoLivePricing =
+      config.media_type === "4k-uhd" &&
+      mode === "discount" &&
+      Number(stats.items_returned ?? 0) > 0 &&
+      Number(stats.getitems_items_with_price ?? 0) === 0;
+
+    if (degradedNoLivePricing) {
+      stats.degraded_no_live_pricing = true;
+      stats.degraded_reason = "items_returned_without_live_getitems_pricing";
+      if (!stoppedEarlyReason) {
+        stoppedEarlyReason = "degraded_no_live_pricing";
+      }
+    }
+
     const preferBucketedRecoveryFor4k =
       config.media_type === "4k-uhd" &&
       Number(stats.candidate_items_with_price ?? 0) === 0 &&
@@ -2842,54 +2867,112 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     }
 
     if (mode === "discount" && keep.length === 0 && config.media_type === "4k-uhd") {
-      try {
-        const bucketedBootstrap = await bootstrapFromBucketedDeals({
-          mediaType: config.media_type,
-          feedKey,
-          minDiscount,
-          limit: bootstrapLimit,
-          offset: bootstrapOffset,
-          now,
-          syncId,
-          existingDealsByAsin,
-          supabase,
-          preferDiscountDiversity: Boolean(stats.paapi_associate_not_eligible),
-        });
+      if (degradedNoLivePricing) {
+        stats.bootstrap_from_bucketed = {
+          skipped: true,
+          reason: "disabled_due_to_degraded_no_live_pricing",
+        };
+      } else {
+        try {
+          const bucketedBootstrap = await bootstrapFromBucketedDeals({
+            mediaType: config.media_type,
+            feedKey,
+            minDiscount,
+            limit: bootstrapLimit,
+            offset: bootstrapOffset,
+            now,
+            syncId,
+            existingDealsByAsin,
+            supabase,
+            preferDiscountDiversity: Boolean(stats.paapi_associate_not_eligible),
+          });
 
-        let keptFromBucketed = 0;
-        if (bucketedBootstrap.rows.length) {
-          for (const row of bucketedBootstrap.rows) {
-            if (seen.has(row.asin)) continue;
-            keep.push(row);
-            seen.add(row.asin);
-            stats.kept += 1;
-            stats.fallback_bucketed_price_used += 1;
-            if (row.discount_pct != null) stats.fallback_bucketed_discount_used += 1;
-            keptFromBucketed += 1;
+          let keptFromBucketed = 0;
+          if (bucketedBootstrap.rows.length) {
+            for (const row of bucketedBootstrap.rows) {
+              if (seen.has(row.asin)) continue;
+              keep.push(row);
+              seen.add(row.asin);
+              stats.kept += 1;
+              stats.fallback_bucketed_price_used += 1;
+              if (row.discount_pct != null) stats.fallback_bucketed_discount_used += 1;
+              keptFromBucketed += 1;
+            }
           }
-        }
 
-        stats.bootstrap_from_bucketed = {
-          attempted_rows: bucketedBootstrap.attempted_rows,
-          candidate_rows: bucketedBootstrap.candidate_rows,
-          candidate_discount_bands: bucketedBootstrap.candidate_discount_bands,
-          kept_discount_bands: bucketedBootstrap.kept_discount_bands,
-          rows_returned: bucketedBootstrap.rows.length,
-          kept: keptFromBucketed,
-          offset: bootstrapOffset,
-          limit: bootstrapLimit,
-          reason: "bucketed_recovery_after_empty_discovery",
-        };
-      } catch (e: any) {
-        stats.bootstrap_from_bucketed = {
-          ok: false,
-          error: e?.message ?? String(e),
-        };
+          stats.bootstrap_from_bucketed = {
+            attempted_rows: bucketedBootstrap.attempted_rows,
+            candidate_rows: bucketedBootstrap.candidate_rows,
+            candidate_discount_bands: bucketedBootstrap.candidate_discount_bands,
+            kept_discount_bands: bucketedBootstrap.kept_discount_bands,
+            rows_returned: bucketedBootstrap.rows.length,
+            kept: keptFromBucketed,
+            offset: bootstrapOffset,
+            limit: bootstrapLimit,
+            reason: "bucketed_recovery_after_empty_discovery",
+          };
+        } catch (e: any) {
+          stats.bootstrap_from_bucketed = {
+            ok: false,
+            error: e?.message ?? String(e),
+          };
+        }
       }
     }
 
     stats.stopped_early_reason = stoppedEarlyReason;
     stats.request_elapsed_ms = requestElapsedMs();
+
+    if (degradedNoLivePricing) {
+      if (keep.length > 0) {
+        stats.discarded_keep_without_live_pricing =
+          Number(stats.discarded_keep_without_live_pricing ?? 0) + keep.length;
+        keep.length = 0;
+        seen.clear();
+        stats.kept = 0;
+      }
+
+      const degradedError =
+        "degraded_no_live_pricing: items were returned but no live GetItems pricing was available";
+
+      if (runId) {
+        try {
+          await supabase
+            .from("refresh_runs")
+            .update({
+              ok: false,
+              finished_at: new Date().toISOString(),
+              found: 0,
+              saved: 0,
+              error: degradedError,
+              stats,
+              errors,
+            })
+            .eq("id", runId);
+        } catch {}
+      }
+
+      return Response.json(
+        {
+          ok: false,
+          error: degradedError,
+          media_type: config.media_type,
+          feed_key: feedKey,
+          mode,
+          min_discount: minDiscount,
+          max_price_cents: maxPriceCents,
+          maxPages,
+          delayMs,
+          found: 0,
+          saved: 0,
+          build_id: BUILD_ID,
+          sync_id: syncId,
+          stats,
+          errors,
+        },
+        { status: 503 }
+      );
+    }
 
     keep.sort((a, b) => (a.sales_rank ?? 1e12) - (b.sales_rank ?? 1e12));
 
