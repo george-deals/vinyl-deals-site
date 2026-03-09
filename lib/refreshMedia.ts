@@ -2192,6 +2192,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     getitems_items_with_price: 0,
     getitems_items_with_offer_payload: 0,
     getitems_items_without_offer_payload: 0,
+    getitems_offer_shape_sample: null as any,
     skipped_already_attempted_asin: 0,
     items_with_discount_data: 0,
     filtered_under_min_discount: 0,
@@ -2436,6 +2437,22 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
                 stats.getitems_items_with_offer_payload += 1;
               } else {
                 stats.getitems_items_without_offer_payload += 1;
+              }
+
+              if (!stats.getitems_offer_shape_sample) {
+                const offersRoot = full?.Offers ?? full?.OffersV2 ?? null;
+                stats.getitems_offer_shape_sample = {
+                  asin,
+                  has_offers: Boolean(offersRoot),
+                  has_offers_v2: Boolean(full?.OffersV2),
+                  top_level_keys: Object.keys(full ?? {}).slice(0, 20),
+                  offers_root_keys:
+                    offersRoot && typeof offersRoot === "object" ? Object.keys(offersRoot).slice(0, 20) : [],
+                  listing_count: fullListings.length,
+                  summary_count: fullSummaries.length,
+                  listing_sample_keys: fullListings.length ? Object.keys(fullListings[0] ?? {}).slice(0, 20) : [],
+                  summary_sample_keys: fullSummaries.length ? Object.keys(fullSummaries[0] ?? {}).slice(0, 20) : [],
+                };
               }
 
               const fullPricing = extractCurrentPricing(full);
