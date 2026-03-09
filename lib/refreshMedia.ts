@@ -98,7 +98,12 @@ function parseDisplayAmountToCents(display: any): number | null {
 }
 
 function toCentsFromPriceObj(price: any): number | null {
-  return toCents(price?.Amount) ?? parseDisplayAmountToCents(price?.DisplayAmount);
+  return (
+    toCents(price?.Amount) ??
+    parseDisplayAmountToCents(price?.DisplayAmount) ??
+    toCents(price?.Money?.Amount) ??
+    parseDisplayAmountToCents(price?.Money?.DisplayAmount)
+  );
 }
 
 function computeDiscountPct(priceCents: number, listCents: number | null): number | null {
@@ -509,9 +514,12 @@ function extractCurrentPricing(item: any): CurrentPricing {
     listCents,
     currency:
       listing?.Price?.Currency ??
+      listing?.Price?.Money?.Currency ??
       listing?.OfferPrice?.Currency ??
       listing?.BuyingPrice?.Currency ??
       listing?.PriceInfo?.Price?.Currency ??
+      listing?.Price?.SavingBasis?.Currency ??
+      listing?.Price?.SavingBasis?.Money?.Currency ??
       summaryCurrency,
     discountPct,
     hadDiscountSignal,
@@ -619,6 +627,10 @@ async function paapiSearch({
       "Offers.Listings.MerchantInfo",
       "Offers.Summaries.LowestPrice",
       "Offers.Summaries.HighestPrice",
+      "OffersV2.Listings.Price",
+      "OffersV2.Listings.IsBuyBoxWinner",
+      "OffersV2.Listings.MerchantInfo",
+      "OffersV2.Listings.Condition",
       "BrowseNodeInfo.WebsiteSalesRank",
       "BrowseNodeInfo.BrowseNodes",
       "BrowseNodeInfo.BrowseNodes.Ancestor",
@@ -676,6 +688,10 @@ async function paapiGetItems(asins: string[]) {
       "Offers.Listings.MerchantInfo",
       "Offers.Summaries.LowestPrice",
       "Offers.Summaries.HighestPrice",
+      "OffersV2.Listings.Price",
+      "OffersV2.Listings.IsBuyBoxWinner",
+      "OffersV2.Listings.MerchantInfo",
+      "OffersV2.Listings.Condition",
     ],
   };
 
