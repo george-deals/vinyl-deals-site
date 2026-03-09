@@ -663,7 +663,6 @@ async function paapiGetItems(asins: string[]) {
   const body = {
     ItemIds: asins,
     ItemIdType: "ASIN",
-    Condition: "New",
     Marketplace: marketplace,
     PartnerTag: partnerTag,
     PartnerType: "Associates",
