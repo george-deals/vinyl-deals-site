@@ -353,6 +353,19 @@ function getOfferSummaries(item: any): any[] {
   return [];
 }
 
+function conditionText(condition: any): string {
+  if (!condition) return "";
+  return String(condition?.Value ?? condition?.DisplayValue ?? condition?.Label ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function conditionLooksNew(condition: any): boolean {
+  const text = conditionText(condition);
+  if (!text) return false;
+  return text === "new" || text.includes("new");
+}
+
 function firstDefinedPriceCents(...candidates: any[]): number | null {
   for (const c of candidates) {
     const cents = toCentsFromPriceObj(c);
@@ -365,10 +378,18 @@ function pickBuyBoxListingOnly(item: any) {
   const listings = getOfferListings(item);
   if (!listings.length) return null;
 
-  const buyBox = listings.find((l: any) => l?.IsBuyBoxWinner === true || l?.IsBuyBoxWinner === "true");
+  const listingsWithCondition = listings.filter((l: any) => Boolean(conditionText(l?.Condition)));
+  const listingsNew = listings.filter((l: any) => conditionLooksNew(l?.Condition));
+  const candidatePool =
+    listingsNew.length > 0 ? listingsNew : listingsWithCondition.length > 0 ? [] : listings;
+  if (!candidatePool.length) return null;
+
+  const buyBox = candidatePool.find(
+    (l: any) => l?.IsBuyBoxWinner === true || l?.IsBuyBoxWinner === "true"
+  );
   const candidate =
     buyBox ??
-    listings.find((l: any) =>
+    candidatePool.find((l: any) =>
       firstDefinedPriceCents(l?.Price, l?.OfferPrice, l?.BuyingPrice, l?.PriceInfo?.Price, l?.PriceInfo)
     );
 
@@ -390,10 +411,7 @@ function pickOfferSummary(item: any) {
   const summaries = getOfferSummaries(item);
   if (!summaries.length) return null;
 
-  const summaryForNew =
-    summaries.find(
-      (s: any) => String(s?.Condition?.Value ?? s?.Condition?.DisplayValue ?? "").toLowerCase() === "new"
-    ) ?? summaries[0];
+  const summaryForNew = summaries.find((s: any) => conditionLooksNew(s?.Condition)) ?? summaries[0];
 
   return summaryForNew ?? null;
 }
@@ -414,12 +432,16 @@ function extractCurrentPricing(item: any): CurrentPricing {
     item?.ItemInfo?.ProductInfo?.ListPrice,
     item?.ItemInfo?.ProductInfo?.UnitPrice
   );
+  const listFromProductInfoCurrency =
+    item?.ItemInfo?.ProductInfo?.ListPrice?.Currency ??
+    item?.ItemInfo?.ProductInfo?.UnitPrice?.Currency ??
+    null;
 
   if (!listing && summaryLow == null) {
     return {
       priceCents: null,
-      listCents: null,
-      currency: null,
+      listCents: listFromProductInfo ?? summaryHigh ?? null,
+      currency: summaryCurrency ?? listFromProductInfoCurrency,
       discountPct: null,
       hadDiscountSignal: false,
     };
@@ -437,8 +459,8 @@ function extractCurrentPricing(item: any): CurrentPricing {
   if (priceCents == null) {
     return {
       priceCents: null,
-      listCents: null,
-      currency: null,
+      listCents: listFromProductInfo ?? summaryHigh ?? null,
+      currency: summaryCurrency ?? listFromProductInfoCurrency,
       discountPct: null,
       hadDiscountSignal: false,
     };
@@ -558,6 +580,7 @@ function getPaapiAuthConfig() {
   return {
     host: process.env.AMAZON_HOST!,
     region: process.env.AMAZON_REGION!,
+    marketplace: process.env.AMAZON_MARKETPLACE || "www.amazon.com",
     accessKey: process.env.AMAZON_ACCESS_KEY!,
     secretKey: process.env.AMAZON_SECRET_KEY!,
     partnerTag: process.env.AMAZON_PARTNER_TAG!,
@@ -573,7 +596,7 @@ async function paapiSearch({
   itemPage: number;
   searchIndex: string;
 }) {
-  const { host, region, accessKey, secretKey, partnerTag } = getPaapiAuthConfig();
+  const { host, region, marketplace, accessKey, secretKey, partnerTag } = getPaapiAuthConfig();
 
   const body = {
     Keywords: keyword,
@@ -581,6 +604,7 @@ async function paapiSearch({
     ItemCount: ITEM_COUNT,
     ItemPage: itemPage,
     Condition: "New",
+    Marketplace: marketplace,
     PartnerTag: partnerTag,
     PartnerType: "Associates",
     Resources: [
@@ -592,9 +616,11 @@ async function paapiSearch({
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
       "Offers.Listings.IsBuyBoxWinner",
+      "Offers.Listings.Condition",
       "Offers.Listings.MerchantInfo",
       "Offers.Summaries.LowestPrice",
       "Offers.Summaries.HighestPrice",
+      "Offers.Summaries.Condition",
       "BrowseNodeInfo.WebsiteSalesRank",
       "BrowseNodeInfo.BrowseNodes",
       "BrowseNodeInfo.BrowseNodes.Ancestor",
@@ -634,12 +660,13 @@ async function paapiSearch({
 }
 
 async function paapiGetItems(asins: string[]) {
-  const { host, region, accessKey, secretKey, partnerTag } = getPaapiAuthConfig();
+  const { host, region, marketplace, accessKey, secretKey, partnerTag } = getPaapiAuthConfig();
 
   const body = {
     ItemIds: asins,
     ItemIdType: "ASIN",
     Condition: "New",
+    Marketplace: marketplace,
     PartnerTag: partnerTag,
     PartnerType: "Associates",
     Resources: [
@@ -649,9 +676,11 @@ async function paapiGetItems(asins: string[]) {
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
       "Offers.Listings.IsBuyBoxWinner",
+      "Offers.Listings.Condition",
       "Offers.Listings.MerchantInfo",
       "Offers.Summaries.LowestPrice",
       "Offers.Summaries.HighestPrice",
+      "Offers.Summaries.Condition",
     ],
   };
 
@@ -2299,9 +2328,11 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     items_returned: 0,
     candidate_items_considered: 0,
     candidate_items_with_price: 0,
+    candidate_items_with_product_list_price: 0,
     getitems_chunks_requested: 0,
     getitems_items_returned: 0,
     getitems_items_with_price: 0,
+    getitems_items_with_product_list_price: 0,
     getitems_items_with_offer_payload: 0,
     getitems_items_without_offer_payload: 0,
     getitems_offer_shape_sample: null as any,
@@ -2502,6 +2533,9 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           const pricing = extractCurrentPricing(item);
           pricingByAsin.set(asin, pricing);
           if (pricing.priceCents != null) stats.candidate_items_with_price += 1;
+          if (pricing.priceCents == null && pricing.listCents != null) {
+            stats.candidate_items_with_product_list_price += 1;
+          }
           if (mode === "discount" || pricing.priceCents == null) asinsForGetItems.push(asin);
         }
 
@@ -2572,6 +2606,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
                 pricingByAsin.set(asin, fullPricing);
                 refetchedWithGetItems += 1;
                 stats.getitems_items_with_price += 1;
+              } else if (fullPricing.listCents != null) {
+                stats.getitems_items_with_product_list_price += 1;
               }
 
               const searchItem = searchItemByAsin.get(asin);
@@ -2804,7 +2840,9 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     const preferBucketedRecoveryFor4k =
       config.media_type === "4k-uhd" &&
       Number(stats.candidate_items_with_price ?? 0) === 0 &&
-      Number(stats.getitems_items_with_price ?? 0) === 0;
+      Number(stats.getitems_items_with_price ?? 0) === 0 &&
+      Number(stats.candidate_items_with_product_list_price ?? 0) === 0 &&
+      Number(stats.getitems_items_with_product_list_price ?? 0) === 0;
 
     if (preferBucketedRecoveryFor4k && keep.length > 0) {
       stats.discarded_keep_without_live_pricing = keep.length;
