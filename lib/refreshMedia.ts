@@ -794,6 +794,7 @@ async function loadRecentPriceBaselines(opts: {
   asins: string[];
   lookbackDays?: number;
   includeAllTimeFallback?: boolean;
+  includeAllTimeForAll?: boolean;
 }) {
   const uniqAsins = Array.from(new Set((opts.asins ?? []).filter(Boolean)));
   if (!uniqAsins.length) return new Map<string, number>();
@@ -801,6 +802,7 @@ async function loadRecentPriceBaselines(opts: {
   const lookbackDays = Math.max(1, Math.min(opts.lookbackDays ?? 120, 365));
   const sinceIso = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
   const includeAllTimeFallback = opts.includeAllTimeFallback ?? true;
+  const includeAllTimeForAll = opts.includeAllTimeForAll ?? false;
 
   const out = new Map<string, number>();
   const CHUNK = 150;
@@ -833,13 +835,13 @@ async function loadRecentPriceBaselines(opts: {
 
     if (!includeAllTimeFallback) continue;
 
-    const unresolved = chunk.filter((asin) => !out.has(asin));
-    if (!unresolved.length) continue;
+    const fallbackTargets = includeAllTimeForAll ? chunk : chunk.filter((asin) => !out.has(asin));
+    if (!fallbackTargets.length) continue;
 
     const { data: fallbackData, error: fallbackError } = await opts.supabase
       .from("asin_price_history")
       .select("asin,price_cents,list_price_cents")
-      .in("asin", unresolved);
+      .in("asin", fallbackTargets);
 
     if (!fallbackError) ingest(fallbackData);
   }
@@ -1668,6 +1670,7 @@ async function bootstrapFromExistingHistoryOnly(opts: {
     asins,
     lookbackDays: opts.historyLookbackDays,
     includeAllTimeFallback: true,
+    includeAllTimeForAll: opts.mediaType === "4k-uhd",
   });
 
   const bucketedByAsin =
@@ -2034,6 +2037,7 @@ async function bootstrapFromBucketedDeals(opts: {
         asins: allAsins,
         lookbackDays: opts.historyLookbackDays ?? 365,
         includeAllTimeFallback: true,
+        includeAllTimeForAll: opts.mediaType === "4k-uhd",
       })
     : new Map<string, number>();
   const candidatePool: Array<{
