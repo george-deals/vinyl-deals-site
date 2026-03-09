@@ -157,6 +157,15 @@ function addDiscountBandCount(
   bucket[toDiscountBand(discountPct)] += 1;
 }
 
+function countHigherDiscountBandCandidates(bucket: any): number {
+  if (!bucket || typeof bucket !== "object") return 0;
+  const n20 = Number(bucket["20_30"] ?? 0);
+  const n30 = Number(bucket["30_40"] ?? 0);
+  const n40 = Number(bucket["40_50"] ?? 0);
+  const n50 = Number(bucket["50_plus"] ?? 0);
+  return [n20, n30, n40, n50].reduce((acc, n) => acc + (Number.isFinite(n) ? n : 0), 0);
+}
+
 function isAssociateNotEligibleError(err: any): boolean {
   const code = String(err?.code ?? err?.Code ?? err?.error?.code ?? "").toLowerCase();
   const message = String(err?.message ?? err?.Message ?? err?.error?.message ?? "").toLowerCase();
@@ -3017,9 +3026,64 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             historyLookbackDays,
           });
 
+          let rowsToKeep = bucketedBootstrap.rows;
+
+          if (
+            degradedNoLivePricing &&
+            countHigherDiscountBandCandidates(bucketedBootstrap.candidate_discount_bands) === 0
+          ) {
+            try {
+              const historyPoolBootstrap = await bootstrapFromTrackedHistoryPool({
+                mediaType: config.media_type,
+                feedKey,
+                minDiscount,
+                limit: bootstrapLimit,
+                offset: bootstrapOffset,
+                now,
+                syncId,
+                historyLookbackDays,
+                existingDealsByAsin,
+                supabase,
+              });
+
+              stats.bootstrap_from_history_pool = {
+                attempted_rows: historyPoolBootstrap.attempted_rows,
+                candidate_rows: historyPoolBootstrap.candidate_rows,
+                candidate_discount_bands: historyPoolBootstrap.candidate_discount_bands,
+                kept_discount_bands: historyPoolBootstrap.kept_discount_bands,
+                rows_returned: historyPoolBootstrap.rows.length,
+                kept: 0,
+                offset: bootstrapOffset,
+                limit: bootstrapLimit,
+                reason: "history_pool_recovery_after_flat_bucketed_bands",
+              };
+
+              if (historyPoolBootstrap.rows.length) {
+                const merged: DealRow[] = [];
+                const mergedSeen = new Set<string>();
+                const pushUnique = (row: DealRow) => {
+                  if (!row?.asin || mergedSeen.has(row.asin)) return;
+                  merged.push(row);
+                  mergedSeen.add(row.asin);
+                };
+
+                for (const row of historyPoolBootstrap.rows) pushUnique(row);
+                for (const row of bucketedBootstrap.rows) pushUnique(row);
+
+                rowsToKeep = merged.slice(0, bootstrapLimit);
+              }
+            } catch (e: any) {
+              stats.bootstrap_from_history_pool = {
+                ok: false,
+                error: e?.message ?? String(e),
+                reason: "history_pool_recovery_after_flat_bucketed_bands",
+              };
+            }
+          }
+
           let keptFromBucketed = 0;
-          if (bucketedBootstrap.rows.length) {
-            for (const row of bucketedBootstrap.rows) {
+          if (rowsToKeep.length) {
+            for (const row of rowsToKeep) {
               if (seen.has(row.asin)) continue;
               keep.push(row);
               seen.add(row.asin);
@@ -3035,7 +3099,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             candidate_rows: bucketedBootstrap.candidate_rows,
             candidate_discount_bands: bucketedBootstrap.candidate_discount_bands,
             kept_discount_bands: bucketedBootstrap.kept_discount_bands,
-            rows_returned: bucketedBootstrap.rows.length,
+            rows_returned: rowsToKeep.length,
+            source_rows_returned: bucketedBootstrap.rows.length,
             kept: keptFromBucketed,
             offset: bootstrapOffset,
             limit: bootstrapLimit,

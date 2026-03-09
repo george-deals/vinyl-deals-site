@@ -1,0 +1,123 @@
+name: Refresh Feeds On Vercel Production Deploy
+
+on:
+  deployment_status:
+
+concurrency:
+  group: refresh-on-vercel-production-deploy
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Gate to Vercel production success only
+        id: gate
+        run: |
+          set -euo pipefail
+
+          DEPLOY_STATE="${{ github.event.deployment_status.state }}"
+          DEPLOY_ENV="${{ github.event.deployment.environment }}"
+          DEPLOY_URL="${{ github.event.deployment_status.environment_url }}"
+          DEPLOY_CREATOR="${{ github.event.deployment.creator.login }}"
+
+          echo "state=$DEPLOY_STATE"
+          echo "environment=$DEPLOY_ENV"
+          echo "creator=$DEPLOY_CREATOR"
+          echo "url=$DEPLOY_URL"
+
+          run=0
+
+          if [ "$DEPLOY_STATE" = "success" ]; then
+            if echo "$DEPLOY_CREATOR" | tr '[:upper:]' '[:lower:]' | grep -q "vercel"; then
+              if echo "$DEPLOY_ENV" | tr '[:upper:]' '[:lower:]' | grep -Eq "production|prod"; then
+                if echo "$DEPLOY_URL" | tr '[:upper:]' '[:lower:]' | grep -q "mediadealshub.com"; then
+                  run=1
+                fi
+              fi
+            fi
+          fi
+
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+      - name: Refresh all feeds
+        if: steps.gate.outputs.run == '1'
+        env:
+          BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          TOKEN: ${{ secrets.REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          BASE="$(echo "${BASE_URL:-}" | tr -d '\r\n' | xargs)"
+          BASE="${BASE%/}"
+          if [ -z "$BASE" ]; then
+            BASE="https://www.mediadealshub.com"
+          fi
+
+          if [ -z "${TOKEN:-}" ]; then
+            echo "Missing REFRESH_TOKEN secret."
+            exit 1
+          fi
+
+          fail_count=0
+
+          run_feed() {
+            local name="$1"
+            local path="$2"
+            local query="$3"
+            local url="${BASE}${path}?token=${TOKEN}${query}"
+
+            echo "Refreshing ${name}..."
+
+            local ok=0
+            local attempt=1
+            while [ $attempt -le 2 ]; do
+              echo "Attempt ${attempt}/2 for ${name}"
+              set +e
+              resp=$(curl -sS --fail-with-body --connect-timeout 15 --max-time 180 "$url")
+              code=$?
+              set -e
+
+              if [ $code -eq 0 ]; then
+                echo "$resp"
+                ok=1
+                break
+              fi
+
+              echo "Request failed for ${name} (code=${code})"
+              if [ -n "${resp:-}" ]; then
+                echo "$resp"
+              fi
+              attempt=$((attempt + 1))
+              sleep 5
+            done
+
+            if [ $ok -eq 0 ]; then
+              echo "Failed refresh for ${name}"
+              fail_count=$((fail_count + 1))
+            fi
+          }
+
+          # 4k is configured to degrade gracefully when live pricing payload is unavailable.
+          run_feed "4k-uhd" "/api/refresh-4k-uhd" "&maxPages=1&delayMs=0&moviesPerRun=2&bootstrapLimit=20&requestBudgetMs=25000&bootstrapReserveMs=5000&historyLookbackDays=365&degradedAsWarning=1"
+          run_feed "blu-ray" "/api/refresh-blu-ray" "&maxPages=2&delayMs=300"
+          run_feed "4k-uhd prices" "/api/track-prices" "&media_type=4k-uhd&batchSize=80&delayMs=300"
+          run_feed "dvd" "/api/refresh-dvd" "&maxPages=2&delayMs=300"
+          run_feed "dvd prices" "/api/track-prices" "&media_type=dvd&batchSize=80&delayMs=300"
+          run_feed "cd" "/api/refresh-cd" "&maxPages=2&delayMs=300"
+          run_feed "cd prices" "/api/track-prices" "&media_type=cd&batchSize=80&delayMs=300"
+          run_feed "vinyl" "/api/refresh-vinyl" "&maxPages=2&delayMs=300"
+          run_feed "vinyl prices" "/api/track-vinyl-prices" "&batchSize=80&delayMs=300"
+
+          if [ $fail_count -gt 0 ]; then
+            echo "Completed with ${fail_count} failed feed refresh(es)."
+            exit 1
+          fi
+
+          echo "All feed refresh calls completed."
+
+      - name: Skip non-production deploy event
+        if: steps.gate.outputs.run != '1'
+        run: |
+          echo "Skipping refresh: event is not a successful Vercel production deployment."
