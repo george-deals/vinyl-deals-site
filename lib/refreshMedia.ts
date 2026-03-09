@@ -2187,6 +2187,9 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
   const activeIncludeAll = ["1", "true", "yes"].includes(
     String(url.searchParams.get("activeIncludeAll") ?? "").toLowerCase()
   );
+  const degradedAsWarning = ["1", "true", "yes"].includes(
+    String(url.searchParams.get("degradedAsWarning") ?? "").toLowerCase()
+  );
 
   const now = new Date().toISOString();
   const syncId = randomUUID();
@@ -2941,7 +2944,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     }
 
     if (mode === "discount" && keep.length === 0 && config.media_type === "4k-uhd") {
-      if (degradedNoLivePricing) {
+      if (degradedNoLivePricing && !degradedAsWarning) {
         stats.bootstrap_from_bucketed = {
           skipped: true,
           reason: "disabled_due_to_degraded_no_live_pricing",
@@ -2983,7 +2986,9 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             kept: keptFromBucketed,
             offset: bootstrapOffset,
             limit: bootstrapLimit,
-            reason: "bucketed_recovery_after_empty_discovery",
+            reason: degradedNoLivePricing
+              ? "bucketed_recovery_during_degraded_no_live_pricing"
+              : "bucketed_recovery_after_empty_discovery",
           };
         } catch (e: any) {
           stats.bootstrap_from_bucketed = {
@@ -2998,7 +3003,9 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     stats.request_elapsed_ms = requestElapsedMs();
 
     if (degradedNoLivePricing) {
-      if (keep.length > 0) {
+      const allowDegradedWarning = degradedAsWarning && keep.length > 0;
+
+      if (!allowDegradedWarning && keep.length > 0) {
         stats.discarded_keep_without_live_pricing =
           Number(stats.discarded_keep_without_live_pricing ?? 0) + keep.length;
         keep.length = 0;
@@ -3008,6 +3015,52 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
       const degradedError =
         `degraded_no_live_pricing: ${String(stats.degraded_reason ?? "items_returned_without_live_getitems_pricing")}`;
+
+      if (allowDegradedWarning) {
+        keep.sort((a, b) => (a.sales_rank ?? 1e12) - (b.sales_rank ?? 1e12));
+
+        let saved = 0;
+        if (keep.length) {
+          await upsertChunked(keep);
+          saved = keep.length;
+        }
+
+        if (runId) {
+          try {
+            await supabase
+              .from("refresh_runs")
+              .update({
+                ok: true,
+                finished_at: new Date().toISOString(),
+                found: keep.length,
+                saved,
+                error: degradedError,
+                stats,
+                errors,
+              })
+              .eq("id", runId);
+          } catch {}
+        }
+
+        return Response.json({
+          ok: true,
+          warning: degradedError,
+          degraded_no_live_pricing: true,
+          media_type: config.media_type,
+          feed_key: feedKey,
+          mode,
+          min_discount: minDiscount,
+          max_price_cents: maxPriceCents,
+          maxPages,
+          delayMs,
+          found: keep.length,
+          saved,
+          build_id: BUILD_ID,
+          sync_id: syncId,
+          stats,
+          errors,
+        });
+      }
 
       if (runId) {
         try {
