@@ -88,7 +88,7 @@ export async function generateMetadata({
     filter === "all" ? `${base} (Amazon US)` : `${filterLabel(filter)} — ${base}`;
   const description =
     filter === "all"
-      ? "Live 4K UHD deals with 15%+ discounts from Amazon, sorted by sales rank."
+      ? "Live 4K UHD deals with 15%+ discounts from Amazon, sorted by highest discount then sales rank."
       : `Live 4K UHD deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
 
   const canonical = filter === "all" ? "/4k-uhd" : `/4k-uhd?discount=${filter}`;
@@ -157,9 +157,15 @@ export default async function FourKUhdDealsPage({
   if (filter === "40-50") q = q.gte("discount_pct", 40).lt("discount_pct", 50);
   if (filter === "50plus") q = q.gte("discount_pct", 50);
 
-  const { data, error } = await q
-    .order("sales_rank", { ascending: true, nullsFirst: false })
-    .limit(500);
+  if (filter === "all") {
+    q = q
+      .order("discount_pct", { ascending: false, nullsFirst: false })
+      .order("sales_rank", { ascending: true, nullsFirst: false });
+  } else {
+    q = q.order("sales_rank", { ascending: true, nullsFirst: false });
+  }
+
+  const { data, error } = await q.limit(500);
 
   const deals: Deal[] = (data ?? []) as Deal[];
 
@@ -168,7 +174,7 @@ export default async function FourKUhdDealsPage({
       <div className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold tracking-tight">4K UHD Deals</h1>
         <p className="text-slate-700">
-          15%+ off 4K UHD deals (sorted by sales rank). Filter by discount range.
+          15%+ off 4K UHD deals (default sort: highest discount, then sales rank). Filter by discount range.
         </p>
         <p className="text-sm text-slate-600">
           Last Updated:{" "}
