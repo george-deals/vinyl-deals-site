@@ -616,11 +616,9 @@ async function paapiSearch({
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
       "Offers.Listings.IsBuyBoxWinner",
-      "Offers.Listings.Condition",
       "Offers.Listings.MerchantInfo",
       "Offers.Summaries.LowestPrice",
       "Offers.Summaries.HighestPrice",
-      "Offers.Summaries.Condition",
       "BrowseNodeInfo.WebsiteSalesRank",
       "BrowseNodeInfo.BrowseNodes",
       "BrowseNodeInfo.BrowseNodes.Ancestor",
@@ -676,11 +674,9 @@ async function paapiGetItems(asins: string[]) {
       "Offers.Listings.Price",
       "Offers.Listings.SavingBasis",
       "Offers.Listings.IsBuyBoxWinner",
-      "Offers.Listings.Condition",
       "Offers.Listings.MerchantInfo",
       "Offers.Summaries.LowestPrice",
       "Offers.Summaries.HighestPrice",
-      "Offers.Summaries.Condition",
     ],
   };
 
