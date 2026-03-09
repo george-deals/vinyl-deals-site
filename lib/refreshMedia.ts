@@ -2187,9 +2187,15 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
   const activeIncludeAll = ["1", "true", "yes"].includes(
     String(url.searchParams.get("activeIncludeAll") ?? "").toLowerCase()
   );
-  const degradedAsWarning = ["1", "true", "yes"].includes(
-    String(url.searchParams.get("degradedAsWarning") ?? "").toLowerCase()
-  );
+  const degradedAsWarningParam = String(
+    url.searchParams.get("degradedAsWarning") ?? ""
+  )
+    .toLowerCase()
+    .trim();
+
+  const degradedAsWarning = degradedAsWarningParam
+    ? ["1", "true", "yes"].includes(degradedAsWarningParam)
+    : config.media_type === "4k-uhd" && mode === "discount";
 
   const now = new Date().toISOString();
   const syncId = randomUUID();
