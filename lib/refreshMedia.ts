@@ -1962,6 +1962,7 @@ async function bootstrapFromBucketedDeals(opts: {
   existingDealsByAsin: Map<string, ExistingDealSnapshot>;
   supabase: any;
   preferDiscountDiversity?: boolean;
+  historyLookbackDays?: number;
 }) {
   const baseScanWindow = 5000;
   const highDiscountScanWindow = 5000;
@@ -1997,6 +1998,35 @@ async function bootstrapFromBucketedDeals(opts: {
       allRows = [...(highRows ?? []), ...allRows];
     }
   }
+
+  const allAsins = Array.from(
+    new Set<string>(
+      allRows
+        .map((row: any) => (row?.asin ? String(row.asin) : ""))
+        .filter((asin: string) => Boolean(asin))
+    )
+  );
+
+  const historyLatestByAsin = allAsins.length
+    ? await loadLatestPriceSnapshots({
+        supabase: opts.supabase,
+        asins: allAsins,
+        lookbackHours: 24 * 30,
+        includeAllTimeFallback: true,
+      })
+    : new Map<
+        string,
+        { price_cents: number; list_price_cents: number | null; currency: string | null; checked_at: string | null }
+      >();
+
+  const historyBaselineByAsin = allAsins.length
+    ? await loadRecentPriceBaselines({
+        supabase: opts.supabase,
+        asins: allAsins,
+        lookbackDays: opts.historyLookbackDays ?? 365,
+        includeAllTimeFallback: true,
+      })
+    : new Map<string, number>();
   const candidatePool: Array<{
     asin: string;
     title: string;
@@ -2020,18 +2050,34 @@ async function bootstrapFromBucketedDeals(opts: {
     seenCandidates.add(asin);
 
     const existing = opts.existingDealsByAsin.get(asin);
+    const historyLatest = historyLatestByAsin.get(asin);
+    const historyBaseline = Number(historyBaselineByAsin.get(asin) ?? 0);
 
     const rowPrice = Number(row?.price_cents);
-    if (!Number.isFinite(rowPrice) || rowPrice <= 0) continue;
-    const priceCents = Math.round(rowPrice);
+    const historyPrice = Number(historyLatest?.price_cents ?? 0);
+    const existingPrice = Number(existing?.price_cents ?? 0);
+
+    const priceCandidates = [rowPrice, historyPrice, existingPrice].filter(
+      (v) => Number.isFinite(v) && v > 0
+    ) as number[];
+
+    if (!priceCandidates.length) continue;
+    const priceCents = Math.round(priceCandidates[0]);
 
     const rowList = Number(row?.list_price_cents);
-    let listCents = Number.isFinite(rowList) && rowList > 0 ? Math.round(rowList) : null;
+    const historyList = Number(historyLatest?.list_price_cents ?? 0);
+    const existingList = Number(existing?.list_price_cents ?? 0);
 
-    let discountPct: number | null = normalizeDiscountPct(row?.discount_pct);
+    const listCandidates = [rowList, historyList, historyBaseline, existingList, existingPrice, rowPrice].filter(
+      (v) => Number.isFinite(v) && v > priceCents
+    ) as number[];
 
+    let listCents = listCandidates.length ? Math.round(Math.max(...listCandidates)) : null;
+
+    let discountPct = computeDiscountPct(priceCents, listCents);
+
+    if (discountPct == null) discountPct = normalizeDiscountPct(row?.discount_pct);
     if (discountPct == null) discountPct = parseDiscountBucketEstimate(row?.discount_bucket);
-    if (discountPct == null) discountPct = computeDiscountPct(priceCents, listCents);
 
     if (discountPct == null || !Number.isFinite(discountPct) || discountPct < opts.minDiscount) continue;
 
@@ -2967,7 +3013,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             syncId,
             existingDealsByAsin,
             supabase,
-            preferDiscountDiversity: Boolean(stats.paapi_associate_not_eligible),
+            preferDiscountDiversity: Boolean(stats.paapi_associate_not_eligible || degradedNoLivePricing),
+            historyLookbackDays,
           });
 
           let keptFromBucketed = 0;
