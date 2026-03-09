@@ -131,6 +131,19 @@ jobs:
               fi
 
               echo "curl failed (code=$CODE)."
+
+              if [ -n "${RESP:-}" ] && echo "$RESP" | grep -q "degraded_no_live_pricing"; then
+                echo "$RESP"
+                echo "Detected degraded no-live-pricing state; stopping further chunks."
+                exit 1
+              fi
+
+              if [ -n "${RESP:-}" ] && echo "$RESP" | grep -q "AssociateNotEligible"; then
+                echo "$RESP"
+                echo "Detected AssociateNotEligible; stopping further chunks."
+                exit 1
+              fi
+
               attempt=$((attempt + 1))
               sleep 2
             done
