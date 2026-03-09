@@ -33,10 +33,10 @@ jobs:
           echo "WORKFLOW_REV=4k-debug-v5"
 
           # Phase 1: bounded active revalidation (keeps stale prices from staying live)
-          REVALIDATE_TOTAL=100
+          REVALIDATE_TOTAL=25
           REVALIDATE_LIMIT=25
           REVALIDATE_REQUEST_BUDGET_MS=26000
-          REVALIDATE_CURL_MAX_TIME=90
+          REVALIDATE_CURL_MAX_TIME=45
           REVALIDATE_MAX_ATTEMPTS=1
 
           echo "Revalidating active $TYPE deals..."
@@ -86,6 +86,11 @@ jobs:
                 echo "No more active rows to revalidate in this window."
                 break
               fi
+            fi
+
+            if [ $revalidate_success -eq 0 ] && [ $revalidate_failures -ge 1 ]; then
+              echo "Stopping revalidate early after repeated timeout/failure."
+              break
             fi
 
             revalidate_offset=$((revalidate_offset + REVALIDATE_LIMIT))

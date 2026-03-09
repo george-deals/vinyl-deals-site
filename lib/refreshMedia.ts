@@ -190,6 +190,29 @@ function extractAxiosError(e: any) {
   return { status, code, message };
 }
 
+function extractPaapiBodyErrors(data: any, status: number | null) {
+  const raw = Array.isArray(data?.Errors) ? data.Errors : [];
+  return raw
+    .map((err: any) => ({
+      status,
+      code: err?.Code ?? null,
+      message: err?.Message ?? "Unknown error",
+    }))
+    .filter((err: any) => Boolean(err.message));
+}
+
+function buildPaapiBodyError(errors: Array<{ status: number | null; code: string | null; message: string }>) {
+  const first = errors[0] ?? { status: null, code: null, message: "Unknown PA-API error" };
+  const e: any = new Error(first.message);
+  e.response = {
+    status: first.status,
+    data: {
+      Errors: errors.map((err) => ({ Code: err.code, Message: err.message })),
+    },
+  };
+  return e;
+}
+
 function extractArtist(item: any): string | null {
   const by = item?.ItemInfo?.ByLineInfo;
 
@@ -591,7 +614,14 @@ async function paapiSearch({
     timeout: 15000,
   });
 
-  return resp.data?.SearchResult?.Items || [];
+  const data = resp.data ?? {};
+  const items = data?.SearchResult?.Items || [];
+  const bodyErrors = extractPaapiBodyErrors(data, resp.status ?? null);
+  if (bodyErrors.length && (!Array.isArray(items) || items.length === 0)) {
+    throw buildPaapiBodyError(bodyErrors);
+  }
+
+  return items;
 }
 
 async function paapiGetItems(asins: string[]) {
@@ -638,7 +668,14 @@ async function paapiGetItems(asins: string[]) {
     timeout: 15000,
   });
 
-  return resp.data?.ItemsResult?.Items || [];
+  const data = resp.data ?? {};
+  const items = data?.ItemsResult?.Items || [];
+  const bodyErrors = extractPaapiBodyErrors(data, resp.status ?? null);
+  if (bodyErrors.length && (!Array.isArray(items) || items.length === 0)) {
+    throw buildPaapiBodyError(bodyErrors);
+  }
+
+  return items;
 }
 
 async function upsertChunked(rows: DealRow[]) {
@@ -2673,10 +2710,17 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
     if (degradedNoLivePricing) {
       stats.degraded_no_live_pricing = true;
+      const getitemsChunksRequested = Number(stats.getitems_chunks_requested ?? 0);
+      const getitemsItemsReturned = Number(stats.getitems_items_returned ?? 0);
+      const getitemsWithoutOffer = Number(stats.getitems_items_without_offer_payload ?? 0);
+
       stats.degraded_reason =
-        Number(stats.getitems_items_without_offer_payload ?? 0) > 0
-          ? "items_returned_without_offer_payload"
-          : "items_returned_without_live_getitems_pricing";
+        getitemsChunksRequested > 0 && getitemsItemsReturned === 0
+          ? "items_returned_but_getitems_returned_zero_items"
+          : getitemsWithoutOffer > 0
+            ? "items_returned_without_offer_payload"
+            : "items_returned_without_live_getitems_pricing";
+
       if (!stoppedEarlyReason) {
         stoppedEarlyReason = "degraded_no_live_pricing";
       }
@@ -2963,7 +3007,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       }
 
       const degradedError =
-        "degraded_no_live_pricing: items were returned but no live GetItems pricing was available";
+        `degraded_no_live_pricing: ${String(stats.degraded_reason ?? "items_returned_without_live_getitems_pricing")}`;
 
       if (runId) {
         try {
