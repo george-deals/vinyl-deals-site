@@ -142,7 +142,18 @@ function normalizeDiscountPct(v: any): number | null {
   return Math.round(normalized * 10) / 10;
 }
 
-function toDiscountBand(discountPct: number): "15_20" | "20_30" | "30_40" | "40_50" | "50_plus" {
+type DiscountBand = "15_20" | "20_30" | "30_40" | "40_50" | "50_plus";
+
+const DISCOUNT_BAND_DESC_ORDER: DiscountBand[] = ["50_plus", "40_50", "30_40", "20_30", "15_20"];
+const DISCOUNT_BAND_DIVERSITY_WEIGHTS: Record<DiscountBand, number> = {
+  "15_20": 0.5,
+  "20_30": 0.2,
+  "30_40": 0.15,
+  "40_50": 0.1,
+  "50_plus": 0.05,
+};
+
+function toDiscountBand(discountPct: number): DiscountBand {
   if (discountPct >= 50) return "50_plus";
   if (discountPct >= 40) return "40_50";
   if (discountPct >= 30) return "30_40";
@@ -169,6 +180,132 @@ function countHigherDiscountBandCandidates(bucket: any): number {
   const n40 = Number(bucket["40_50"] ?? 0);
   const n50 = Number(bucket["50_plus"] ?? 0);
   return [n20, n30, n40, n50].reduce((acc, n) => acc + (Number.isFinite(n) ? n : 0), 0);
+}
+
+function rotateArray<T>(rows: T[], offset: number): T[] {
+  if (!rows.length) return rows;
+  const startIndex = ((Math.max(0, offset) % rows.length) + rows.length) % rows.length;
+  return rows.slice(startIndex).concat(rows.slice(0, startIndex));
+}
+
+function sortDiscountCandidates<T extends { asin: string; discount_pct: number; updated_at_ms: number }>(rows: T[]): T[] {
+  return rows.slice().sort((a, b) => {
+    if (b.discount_pct !== a.discount_pct) return b.discount_pct - a.discount_pct;
+    if (b.updated_at_ms !== a.updated_at_ms) return b.updated_at_ms - a.updated_at_ms;
+    return a.asin.localeCompare(b.asin);
+  });
+}
+
+function buildDiscountBandTargets(limit: number, availableByBand: Record<DiscountBand, number>) {
+  const targets: Record<DiscountBand, number> = { "15_20": 0, "20_30": 0, "30_40": 0, "40_50": 0, "50_plus": 0 };
+  if (limit <= 0) return targets;
+
+  for (const band of DISCOUNT_BAND_DESC_ORDER) {
+    const available = Math.max(0, Number(availableByBand[band] ?? 0));
+    if (!available) continue;
+    const weighted = Math.floor(limit * DISCOUNT_BAND_DIVERSITY_WEIGHTS[band]);
+    targets[band] = Math.min(available, weighted);
+  }
+
+  for (const band of DISCOUNT_BAND_DESC_ORDER) {
+    if (band === "15_20") continue;
+    if ((availableByBand[band] ?? 0) > 0 && targets[band] === 0) {
+      const currentlyAllocated = DISCOUNT_BAND_DESC_ORDER.reduce((sum, b) => sum + targets[b], 0);
+      if (currentlyAllocated < limit) {
+        targets[band] = 1;
+      }
+    }
+  }
+
+  let allocated = DISCOUNT_BAND_DESC_ORDER.reduce((sum, band) => sum + targets[band], 0);
+  if (allocated > limit) {
+    for (const band of ["15_20", "20_30", "30_40", "40_50", "50_plus"] as DiscountBand[]) {
+      while (allocated > limit && targets[band] > 0) {
+        targets[band] -= 1;
+        allocated -= 1;
+      }
+      if (allocated <= limit) break;
+    }
+  }
+
+  if (allocated < limit) {
+    for (const band of DISCOUNT_BAND_DESC_ORDER) {
+      const available = Math.max(0, Number(availableByBand[band] ?? 0));
+      while (allocated < limit && targets[band] < available) {
+        targets[band] += 1;
+        allocated += 1;
+      }
+      if (allocated >= limit) break;
+    }
+  }
+
+  return targets;
+}
+
+function selectDiscountCandidates<T extends { asin: string; discount_pct: number; updated_at_ms: number }>(opts: {
+  candidates: T[];
+  limit: number;
+  offset: number;
+  preferDiscountDiversity: boolean;
+}): T[] {
+  if (!opts.candidates.length || opts.limit <= 0) return [];
+
+  const sorted = sortDiscountCandidates(opts.candidates);
+  if (!opts.preferDiscountDiversity) {
+    return rotateArray(sorted, opts.offset).slice(0, opts.limit);
+  }
+
+  const byBand: Record<DiscountBand, T[]> = {
+    "15_20": [],
+    "20_30": [],
+    "30_40": [],
+    "40_50": [],
+    "50_plus": [],
+  };
+
+  for (const row of sorted) {
+    byBand[toDiscountBand(row.discount_pct)].push(row);
+  }
+
+  const availableByBand: Record<DiscountBand, number> = {
+    "15_20": byBand["15_20"].length,
+    "20_30": byBand["20_30"].length,
+    "30_40": byBand["30_40"].length,
+    "40_50": byBand["40_50"].length,
+    "50_plus": byBand["50_plus"].length,
+  };
+
+  const targets = buildDiscountBandTargets(opts.limit, availableByBand);
+  const selected: T[] = [];
+  const selectedAsins = new Set<string>();
+  const leftovers: T[] = [];
+
+  for (const band of DISCOUNT_BAND_DESC_ORDER) {
+    const rotatedBand = rotateArray(byBand[band], opts.offset);
+    let taken = 0;
+
+    for (const row of rotatedBand) {
+      if (selectedAsins.has(row.asin)) continue;
+      if (taken < targets[band]) {
+        selected.push(row);
+        selectedAsins.add(row.asin);
+        taken += 1;
+      } else {
+        leftovers.push(row);
+      }
+    }
+  }
+
+  if (selected.length < opts.limit) {
+    for (const row of leftovers) {
+      if (selectedAsins.has(row.asin)) continue;
+      selected.push(row);
+      selectedAsins.add(row.asin);
+      if (selected.length >= opts.limit) break;
+    }
+  }
+
+  return selected.slice(0, opts.limit);
 }
 
 function isAssociateNotEligibleError(err: any): boolean {
@@ -1966,17 +2103,15 @@ async function bootstrapFromTrackedHistoryPool(opts: {
     };
   }
 
-  candidates.sort((a, b) => {
-    if (b.discount_pct !== a.discount_pct) return b.discount_pct - a.discount_pct;
-    if (b.updated_at_ms !== a.updated_at_ms) return b.updated_at_ms - a.updated_at_ms;
-    return a.asin.localeCompare(b.asin);
+  const selectedCandidates = selectDiscountCandidates({
+    candidates,
+    limit: opts.limit,
+    offset: opts.offset,
+    preferDiscountDiversity: opts.mediaType === "4k-uhd",
   });
 
-  const startIndex = opts.offset % candidates.length;
-  const ordered = candidates.slice(startIndex).concat(candidates.slice(0, startIndex));
-
   const rows: DealRow[] = [];
-  for (const c of ordered) {
+  for (const c of selectedCandidates) {
     rows.push({
       asin: c.asin,
       title: c.title,
@@ -2180,24 +2315,16 @@ async function bootstrapFromBucketedDeals(opts: {
     };
   }
 
-  candidatePool.sort((a, b) => {
-    if (b.discount_pct !== a.discount_pct) return b.discount_pct - a.discount_pct;
-    if (b.updated_at_ms !== a.updated_at_ms) return b.updated_at_ms - a.updated_at_ms;
-    return a.asin.localeCompare(b.asin);
+  const higherBandCandidates = countHigherDiscountBandCandidates(candidateDiscountBands);
+  const selectedCandidates = selectDiscountCandidates({
+    candidates: candidatePool,
+    limit: opts.limit,
+    offset: opts.offset,
+    preferDiscountDiversity: Boolean(opts.preferDiscountDiversity) || higherBandCandidates > 0,
   });
 
-  const higherBandCandidates = countHigherDiscountBandCandidates(candidateDiscountBands);
-  const prioritizeHigherBands = Boolean(opts.preferDiscountDiversity) && higherBandCandidates > 0;
-
-  const ordered = prioritizeHigherBands
-    ? candidatePool
-    : (() => {
-        const startIndex = opts.offset % candidatePool.length;
-        return candidatePool.slice(startIndex).concat(candidatePool.slice(0, startIndex));
-      })();
-
   const rows: DealRow[] = [];
-  for (const c of ordered) {
+  for (const c of selectedCandidates) {
     rows.push({
       asin: c.asin,
       title: c.title,
@@ -3077,7 +3204,9 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       }
     }
 
-    if (mode === "discount" && keep.length === 0 && config.media_type === "4k-uhd") {
+    if (mode === "discount" && keep.length < bootstrapLimit && config.media_type === "4k-uhd") {
+      const keepBeforeBucketed = keep.length;
+      const bucketedTopUpLimit = Math.max(1, bootstrapLimit - keepBeforeBucketed);
       if (degradedNoLivePricing && !degradedAsWarning) {
         stats.bootstrap_from_bucketed = {
           skipped: true,
@@ -3089,7 +3218,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             mediaType: config.media_type,
             feedKey,
             minDiscount,
-            limit: bootstrapLimit,
+            limit: bucketedTopUpLimit,
             offset: bootstrapOffset,
             now,
             syncId,
@@ -3114,7 +3243,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
                 mediaType: config.media_type,
                 feedKey,
                 minDiscount,
-                limit: bootstrapLimit,
+                limit: bucketedTopUpLimit,
                 offset: bootstrapOffset,
                 now,
                 syncId,
@@ -3131,7 +3260,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
                 rows_returned: historyPoolBootstrap.rows.length,
                 kept: 0,
                 offset: bootstrapOffset,
-                limit: bootstrapLimit,
+                limit: bucketedTopUpLimit,
                 reason: "history_pool_recovery_after_flat_bucketed_bands",
               };
 
@@ -3147,7 +3276,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
                 for (const row of historyPoolBootstrap.rows) pushUnique(row);
                 for (const row of bucketedBootstrap.rows) pushUnique(row);
 
-                rowsToKeep = merged.slice(0, bootstrapLimit);
+                rowsToKeep = merged.slice(0, bucketedTopUpLimit);
               }
             } catch (e: any) {
               stats.bootstrap_from_history_pool = {
@@ -3180,10 +3309,13 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             source_rows_returned: bucketedBootstrap.rows.length,
             kept: keptFromBucketed,
             offset: bootstrapOffset,
-            limit: bootstrapLimit,
-            reason: degradedNoLivePricing
-              ? "bucketed_recovery_during_degraded_no_live_pricing"
-              : "bucketed_recovery_after_empty_discovery",
+            limit: bucketedTopUpLimit,
+            reason:
+              keepBeforeBucketed > 0
+                ? "bucketed_topup_after_partial_discovery"
+                : degradedNoLivePricing
+                  ? "bucketed_recovery_during_degraded_no_live_pricing"
+                  : "bucketed_recovery_after_empty_discovery",
           };
         } catch (e: any) {
           stats.bootstrap_from_bucketed = {
