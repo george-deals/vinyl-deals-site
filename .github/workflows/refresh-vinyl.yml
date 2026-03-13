@@ -42,22 +42,58 @@ jobs:
           echo "Refreshing vinyl deals in chunks..."
 
           echo "Revalidating active vinyl deals..."
-          REVALIDATE_LIMIT=25
-          REVALIDATE_TOTAL=300
+          REVALIDATE_LIMIT=50
+          REVALIDATE_TOTAL=1200
           REVALIDATE_REQUEST_BUDGET_MS=26000
+          REVALIDATE_CURL_MAX_TIME=45
           revalidate_offset=0
+          revalidate_calls=0
+          revalidate_success=0
+          revalidate_failures=0
           while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
             revalidate_url="${BASE}/api/refresh-vinyl?token=${TOKEN}&revalidateActive=1&revalidateOnly=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}&activeIncludeAll=1&requestBudgetMs=${REVALIDATE_REQUEST_BUDGET_MS}&maxPages=1&delayMs=0&degradedAsWarning=1&strictLivePricing=1&stalePruneHours=0"
             echo "Revalidate offset=${revalidate_offset} limit=${REVALIDATE_LIMIT}"
-            if ! curl -sS --fail-with-body \
+
+            set +e
+            RRESP=$(curl -sS --fail-with-body \
               --connect-timeout 20 \
-              --max-time 45 \
-              "$revalidate_url" | head -c 2000; then
-              echo "WARNING: revalidation call failed; continuing to next chunk..."
+              --max-time ${REVALIDATE_CURL_MAX_TIME} \
+              "$revalidate_url")
+            RCODE=$?
+            set -e
+
+            revalidate_calls=$((revalidate_calls + 1))
+
+            if [ $RCODE -ne 0 ]; then
+              revalidate_failures=$((revalidate_failures + 1))
+              echo "WARNING: revalidation call failed (code=$RCODE); continuing..."
+            else
+              revalidate_success=$((revalidate_success + 1))
+              echo "${RRESP:0:2000}"
+
+              attempted=$(echo "$RRESP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(Number(j?.revalidate_active?.attempted_asins ?? 0));}catch{console.log(0);}})')
+              updatedDiscounted=$(echo "$RRESP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(Number(j?.revalidate_active?.updated_discounted ?? 0));}catch{console.log(0);}})')
+              updatedInvalid=$(echo "$RRESP" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(Number(j?.revalidate_active?.updated_invalid ?? 0));}catch{console.log(0);}})')
+
+              echo "Revalidate attempted=${attempted} updated_discounted=${updatedDiscounted} updated_invalid=${updatedInvalid}"
+              if [ "$attempted" -eq 0 ]; then
+                echo "No more active rows to revalidate in this window."
+                break
+              fi
             fi
+
+            if [ $revalidate_success -eq 0 ] && [ $revalidate_failures -ge 2 ]; then
+              echo "Stopping revalidation early after repeated failures."
+              break
+            fi
+
             revalidate_offset=$((revalidate_offset + REVALIDATE_LIMIT))
             sleep 1
           done
+
+          if [ $revalidate_calls -gt 0 ] && [ $revalidate_success -eq 0 ]; then
+            echo "WARNING: all revalidate calls failed; continuing to discovery."
+          fi
 
           offset=0
           while [ $offset -lt $TOTAL ]; do
