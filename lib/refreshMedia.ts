@@ -1900,24 +1900,14 @@ async function bootstrapFromExistingHistoryOnly(opts: {
     asins,
     lookbackDays: opts.historyLookbackDays,
     includeAllTimeFallback: true,
-    includeAllTimeForAll: opts.mediaType === "4k-uhd",
+    includeAllTimeForAll: true,
   });
 
-  const bucketedByAsin =
-    opts.mediaType === "4k-uhd"
-      ? await loadBucketedSnapshots({
-          supabase: opts.supabase,
-          asins,
-          mediaType: opts.mediaType,
-        })
-      : new Map<string, {
-          price_cents: number | null;
-          list_price_cents: number | null;
-          currency: string | null;
-          discount_pct: number | null;
-          title: string | null;
-          image_url: string | null;
-        }>();
+  const bucketedByAsin = await loadBucketedSnapshots({
+    supabase: opts.supabase,
+    asins,
+    mediaType: opts.mediaType,
+  });
 
   const rows: DealRow[] = [];
   let fallbackHistoryRowsUsed = 0;
@@ -2065,21 +2055,11 @@ async function bootstrapFromTrackedHistoryPool(opts: {
     includeAllTimeFallback: true,
   });
 
-  const bucketedByAsin =
-    opts.mediaType === "4k-uhd"
-      ? await loadBucketedSnapshots({
-          supabase: opts.supabase,
-          asins,
-          mediaType: opts.mediaType,
-        })
-      : new Map<string, {
-          price_cents: number | null;
-          list_price_cents: number | null;
-          currency: string | null;
-          discount_pct: number | null;
-          title: string | null;
-          image_url: string | null;
-        }>();
+  const bucketedByAsin = await loadBucketedSnapshots({
+    supabase: opts.supabase,
+    asins,
+    mediaType: opts.mediaType,
+  });
 
   const candidates: Array<{
     asin: string;
@@ -2160,7 +2140,7 @@ async function bootstrapFromTrackedHistoryPool(opts: {
     candidates,
     limit: opts.limit,
     offset: opts.offset,
-    preferDiscountDiversity: opts.mediaType === "4k-uhd",
+    preferDiscountDiversity: true,
   });
 
   const rows: DealRow[] = [];
@@ -2272,7 +2252,7 @@ async function bootstrapFromBucketedDeals(opts: {
         asins: allAsins,
         lookbackDays: opts.historyLookbackDays ?? 365,
         includeAllTimeFallback: true,
-        includeAllTimeForAll: opts.mediaType === "4k-uhd",
+        includeAllTimeForAll: true,
       })
     : new Map<string, number>();
   const candidatePool: Array<{
@@ -2488,16 +2468,16 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
   const degradedAsWarning = degradedAsWarningParam
     ? ["1", "true", "yes"].includes(degradedAsWarningParam)
-    : config.media_type === "4k-uhd" && mode === "discount";
+    : mode === "discount";
 
   const strictLivePricingParam = String(url.searchParams.get("strictLivePricing") ?? "")
     .toLowerCase()
     .trim();
   const strictLivePricing = strictLivePricingParam
     ? ["1", "true", "yes"].includes(strictLivePricingParam)
-    : config.media_type === "4k-uhd" && mode === "discount";
+    : mode === "discount";
 
-  const useStrictLivePricing = strictLivePricing && config.media_type === "4k-uhd" && mode === "discount";
+  const useStrictLivePricing = strictLivePricing && mode === "discount";
 
   const defaultStalePruneHours = 0;
   const stalePruneHoursParam = Number(url.searchParams.get("stalePruneHours") ?? String(defaultStalePruneHours));
@@ -2720,6 +2700,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
             asins: (items ?? []).map((it) => String(it?.ASIN ?? "")).filter(Boolean),
             lookbackDays: historyLookbackDays,
             includeAllTimeFallback: true,
+            includeAllTimeForAll: true,
           });
         }
 
@@ -2865,21 +2846,11 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           includeAllTimeFallback: true,
         });
 
-        const bucketedByAsin =
-          config.media_type === "4k-uhd"
-            ? await loadBucketedSnapshots({
-                supabase,
-                asins: candidateAsins,
-                mediaType: config.media_type,
-              })
-            : new Map<string, {
-                price_cents: number | null;
-                list_price_cents: number | null;
-                currency: string | null;
-                discount_pct: number | null;
-                title: string | null;
-                image_url: string | null;
-              }>();
+        const bucketedByAsin = await loadBucketedSnapshots({
+          supabase,
+          asins: candidateAsins,
+          mediaType: config.media_type,
+        });
 
         for (const asin of candidateAsins) {
           const item = searchItemByAsin.get(asin);
@@ -3086,7 +3057,6 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     }
 
     const degradedNoLivePricing =
-      config.media_type === "4k-uhd" &&
       mode === "discount" &&
       Number(stats.items_returned ?? 0) > 0 &&
       Number(stats.getitems_items_with_price ?? 0) === 0 &&
@@ -3110,14 +3080,13 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       }
     }
 
-    const preferBucketedRecoveryFor4k =
-      config.media_type === "4k-uhd" &&
+    const preferBucketedRecoveryWhenNoLivePricing =
       Number(stats.candidate_items_with_price ?? 0) === 0 &&
       Number(stats.getitems_items_with_price ?? 0) === 0 &&
       Number(stats.candidate_items_with_product_list_price ?? 0) === 0 &&
       Number(stats.getitems_items_with_product_list_price ?? 0) === 0;
 
-    if (preferBucketedRecoveryFor4k && keep.length > 0) {
+    if (preferBucketedRecoveryWhenNoLivePricing && keep.length > 0) {
       stats.discarded_keep_without_live_pricing = keep.length;
       keep.length = 0;
       seen.clear();
@@ -3128,14 +3097,14 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       if (useStrictLivePricing) {
         stats.bootstrap_from_existing = { skipped: true, reason: "strict_live_pricing_enabled" };
         stats.bootstrap_from_tracked = { skipped: true, reason: "strict_live_pricing_enabled" };
-      } else if (preferBucketedRecoveryFor4k) {
+      } else if (preferBucketedRecoveryWhenNoLivePricing) {
         stats.bootstrap_from_existing = {
           skipped: true,
-          reason: "prefer_bucketed_recovery_4k_no_live_pricing",
+          reason: "prefer_bucketed_recovery_no_live_pricing",
         };
         stats.bootstrap_from_tracked = {
           skipped: true,
-          reason: "prefer_bucketed_recovery_4k_no_live_pricing",
+          reason: "prefer_bucketed_recovery_no_live_pricing",
         };
       } else if (budgetExceeded()) {
         const historyBootstrap = await bootstrapFromExistingHistoryOnly({
@@ -3281,7 +3250,6 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     if (
       mode === "discount" &&
       keep.length === 0 &&
-      config.media_type === "4k-uhd" &&
       stats.paapi_associate_not_eligible &&
       !useStrictLivePricing
     ) {
@@ -3330,7 +3298,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       }
     }
 
-    if (mode === "discount" && keep.length < bootstrapLimit && config.media_type === "4k-uhd" && !useStrictLivePricing) {
+    if (mode === "discount" && keep.length < bootstrapLimit && !useStrictLivePricing) {
       const keepBeforeBucketed = keep.length;
       const bucketedTopUpLimit = Math.max(1, bootstrapLimit - keepBeforeBucketed);
       if (degradedNoLivePricing && !degradedAsWarning) {

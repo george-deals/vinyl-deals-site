@@ -35,9 +35,10 @@ jobs:
           echo "Revalidating active $TYPE deals..."
           REVALIDATE_LIMIT=25
           REVALIDATE_TOTAL=300
+          REVALIDATE_REQUEST_BUDGET_MS=26000
           revalidate_offset=0
           while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
-            revalidate_url="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&revalidateOnly=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}"
+            revalidate_url="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&revalidateOnly=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}&activeIncludeAll=1&requestBudgetMs=${REVALIDATE_REQUEST_BUDGET_MS}&maxPages=1&delayMs=0&degradedAsWarning=1&strictLivePricing=1&stalePruneHours=0"
             echo "Revalidate offset=$revalidate_offset limit=$REVALIDATE_LIMIT"
             if ! curl -sS --fail-with-body \
               --connect-timeout 20 \
@@ -57,7 +58,7 @@ jobs:
           offset=0
 
           while [ $offset -lt $TOTAL ]; do
-            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}&bootstrapReserveMs=25000"
+            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}&bootstrapReserveMs=25000&historyLookbackDays=365&degradedAsWarning=1&strictLivePricing=1&stalePruneHours=0"
             echo "Chunk offset=$offset size=$PER_RUN"
 
             ok=0
