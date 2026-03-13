@@ -33,7 +33,7 @@ jobs:
           echo "WORKFLOW_REV=4k-debug-v6"
 
           # Phase 1: bounded active revalidation (keeps stale prices from staying live)
-          REVALIDATE_TOTAL=25
+          REVALIDATE_TOTAL=100
           REVALIDATE_LIMIT=25
           REVALIDATE_REQUEST_BUDGET_MS=26000
           REVALIDATE_CURL_MAX_TIME=45
@@ -46,7 +46,7 @@ jobs:
           revalidate_failures=0
 
           while [ $revalidate_offset -lt $REVALIDATE_TOTAL ]; do
-            RURL="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&revalidateOnly=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}&activeIncludeAll=1&requestBudgetMs=${REVALIDATE_REQUEST_BUDGET_MS}&maxPages=1&delayMs=0&degradedAsWarning=1"
+            RURL="$BASE/api/refresh-$TYPE?token=$TOKEN&revalidateActive=1&revalidateOnly=1&activeLimit=${REVALIDATE_LIMIT}&activeOffset=${revalidate_offset}&activeIncludeAll=1&requestBudgetMs=${REVALIDATE_REQUEST_BUDGET_MS}&maxPages=1&delayMs=0&degradedAsWarning=1&strictLivePricing=1&stalePruneHours=0"
             echo "Revalidate offset=$revalidate_offset limit=$REVALIDATE_LIMIT"
 
             r_ok=0
@@ -118,7 +118,7 @@ jobs:
           stop_discovery=0
 
           while [ $offset -lt $TOTAL ]; do
-            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}&bootstrapReserveMs=${BOOTSTRAP_RESERVE_MS}&historyLookbackDays=365&degradedAsWarning=1"
+            URL="$BASE/api/refresh-$TYPE?token=$TOKEN&maxPages=${MAXPAGES}&delayMs=0&moviesPerRun=${PER_RUN}&moviesOffset=${offset}&bootstrapLimit=${BOOTSTRAP_LIMIT}&requestBudgetMs=${REQUEST_BUDGET_MS}&bootstrapReserveMs=${BOOTSTRAP_RESERVE_MS}&historyLookbackDays=365&degradedAsWarning=1&strictLivePricing=1&stalePruneHours=0"
             echo "Chunk offset=$offset size=$PER_RUN"
 
             ok=0

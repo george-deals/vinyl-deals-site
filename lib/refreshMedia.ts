@@ -1170,9 +1170,11 @@ async function revalidateActiveDeals(opts: {
   limit: number;
   offset: number;
   includeAll?: boolean;
+  strictLivePricing?: boolean;
 }) {
   const supabase = getSupabaseAdmin();
   const now = new Date().toISOString();
+  const strictLivePricing = opts.strictLivePricing === true;
 
   let dealsQuery = supabase
     .from("deals")
@@ -1234,18 +1236,25 @@ async function revalidateActiveDeals(opts: {
       errorsOut.push({ asins: chunk, error: { message: "paapi_partial_response", returned: items.length } });
     }
 
-    const historyLatestByAsin = await loadLatestPriceSnapshots({
-      supabase,
-      asins: chunk,
-      lookbackHours: 72,
-      includeAllTimeFallback: true,
-    });
-    const historyBaselineByAsin = await loadRecentPriceBaselines({
-      supabase,
-      asins: chunk,
-      lookbackDays: 120,
-      includeAllTimeFallback: true,
-    });
+    const historyLatestByAsin = strictLivePricing
+      ? new Map<
+          string,
+          { price_cents: number; list_price_cents: number | null; currency: string | null; checked_at: string | null }
+        >()
+      : await loadLatestPriceSnapshots({
+          supabase,
+          asins: chunk,
+          lookbackHours: 72,
+          includeAllTimeFallback: true,
+        });
+    const historyBaselineByAsin = strictLivePricing
+      ? new Map<string, number>()
+      : await loadRecentPriceBaselines({
+          supabase,
+          asins: chunk,
+          lookbackDays: 120,
+          includeAllTimeFallback: true,
+        });
 
     for (const asin of chunk) {
       const existing = byAsin.get(asin) ?? {
@@ -1263,6 +1272,15 @@ async function revalidateActiveDeals(opts: {
           errorsOut.push({ asin, error: { message: "paapi_missing_in_partial_response" } });
         } else {
           errorsOut.push({ asin, error: { message: "paapi_item_missing" } });
+        }
+
+        if (strictLivePricing) {
+          invalidRows.push({
+            asin,
+            discount_pct: 0,
+            updated_at: now,
+          });
+          continue;
         }
 
         const historyLatest = historyLatestByAsin.get(asin);
@@ -1328,6 +1346,41 @@ async function revalidateActiveDeals(opts: {
       let priceCents = pricing.priceCents;
       let listCents = pricing.listCents ?? existing.list_price_cents;
       let currency = pricing.currency ?? existing.currency;
+
+      if (strictLivePricing) {
+        if (priceCents == null) {
+          errorsOut.push({ asin, error: { message: "no_live_price_data" } });
+          invalidRows.push({
+            asin,
+            discount_pct: 0,
+            updated_at: now,
+          });
+          continue;
+        }
+
+        const liveDiscountPct = pricing.discountPct ?? computeDiscountPct(priceCents, pricing.listCents ?? null);
+        if (liveDiscountPct != null && liveDiscountPct >= opts.minDiscount) {
+          discountedRows.push({
+            asin,
+            price_cents: priceCents,
+            list_price_cents: pricing.listCents ?? null,
+            currency,
+            discount_pct: liveDiscountPct,
+            updated_at: now,
+            last_seen_at: now,
+          });
+        } else {
+          invalidRows.push({
+            asin,
+            price_cents: priceCents,
+            list_price_cents: pricing.listCents ?? null,
+            currency,
+            discount_pct: 0,
+            updated_at: now,
+          });
+        }
+        continue;
+      }
 
       if (priceCents == null) {
         const historyLatest = historyLatestByAsin.get(asin);
@@ -2446,7 +2499,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
   const useStrictLivePricing = strictLivePricing && config.media_type === "4k-uhd" && mode === "discount";
 
-  const defaultStalePruneHours = config.media_type === "4k-uhd" && mode === "discount" ? 24 * 3 : 0;
+  const defaultStalePruneHours = 0;
   const stalePruneHoursParam = Number(url.searchParams.get("stalePruneHours") ?? String(defaultStalePruneHours));
   const stalePruneHours = Number.isFinite(stalePruneHoursParam)
     ? Math.max(0, Math.min(stalePruneHoursParam, 24 * 365))
@@ -2583,28 +2636,22 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
   try {
     if (revalidateActive) {
-      if (useStrictLivePricing) {
-        stats.revalidate_active = {
-          skipped: true,
-          reason: "strict_live_pricing_enabled",
-        };
-      } else {
-        try {
-          stats.revalidate_active = await revalidateActiveDeals({
-            mediaType: config.media_type,
-            feedKey,
-            minDiscount,
-            limit: activeLimit,
-            offset: activeOffset,
-            includeAll: activeIncludeAll,
-          });
-        } catch (e: any) {
-          stats.revalidate_active = { ok: false, error: e?.message ?? String(e) };
-        }
+      try {
+        stats.revalidate_active = await revalidateActiveDeals({
+          mediaType: config.media_type,
+          feedKey,
+          minDiscount,
+          limit: activeLimit,
+          offset: activeOffset,
+          includeAll: activeIncludeAll,
+          strictLivePricing: useStrictLivePricing,
+        });
+      } catch (e: any) {
+        stats.revalidate_active = { ok: false, error: e?.message ?? String(e) };
+      }
 
-        if (containsAssociateNotEligible(stats.revalidate_active)) {
-          stats.paapi_associate_not_eligible = true;
-        }
+      if (containsAssociateNotEligible(stats.revalidate_active)) {
+        stats.paapi_associate_not_eligible = true;
       }
 
       if (revalidateOnly) {

@@ -6,7 +6,7 @@ export const revalidate = 60;
 
 const FEED_KEY = "discount-15";
 const MIN_DISCOUNT = 15;
-const FOURK_FRESHNESS_HOURS = Math.max(12, Math.min(Number(process.env.FOURK_PAGE_FRESHNESS_HOURS ?? "72"), 24 * 90));
+const FOURK_FRESHNESS_HOURS = Math.max(0, Math.min(Number(process.env.FOURK_PAGE_FRESHNESS_HOURS ?? "0"), 24 * 365));
 
 type Deal = {
   asin: string;
@@ -21,7 +21,6 @@ type Deal = {
   media_type: string | null;
   sales_rank: number | null;
   updated_at: string;
-  last_seen_at: string;
 };
 
 type DiscountFilter = "all" | "15-20" | "20-30" | "30-40" | "40-50" | "50plus";
@@ -148,12 +147,15 @@ export default async function FourKUhdDealsPage({
   let q = supabase
     .from("deals")
     .select(
-      "asin,title,artist,image_url,amazon_url,price_cents,list_price_cents,currency,discount_pct,media_type,sales_rank,updated_at,last_seen_at"
+      "asin,title,artist,image_url,amazon_url,price_cents,list_price_cents,currency,discount_pct,media_type,sales_rank,updated_at"
     )
     .eq("media_type", "4k-uhd")
     .eq("feed_key", FEED_KEY)
-    .gte("discount_pct", MIN_DISCOUNT)
-    .gte("last_seen_at", freshSinceIso);
+    .gte("discount_pct", MIN_DISCOUNT);
+
+  if (FOURK_FRESHNESS_HOURS > 0) {
+    q = q.gte("last_seen_at", freshSinceIso);
+  }
 
   if (filter === "15-20") q = q.gte("discount_pct", 15).lt("discount_pct", 20);
   if (filter === "20-30") q = q.gte("discount_pct", 20).lt("discount_pct", 30);
@@ -178,7 +180,7 @@ export default async function FourKUhdDealsPage({
       <div className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold tracking-tight">4K UHD Deals</h1>
         <p className="text-slate-700">
-          15%+ off 4K UHD deals seen in the last few days (default sort: highest discount, then sales rank). Filter by discount range.
+          15%+ off 4K UHD deals (default sort: highest discount, then sales rank). Filter by discount range.
         </p>
         <p className="text-sm text-slate-600">
           Last Updated:{" "}
