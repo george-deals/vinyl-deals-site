@@ -2437,7 +2437,16 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     ? ["1", "true", "yes"].includes(degradedAsWarningParam)
     : config.media_type === "4k-uhd" && mode === "discount";
 
-  const defaultStalePruneHours = config.media_type === "4k-uhd" && mode === "discount" ? 24 * 14 : 0;
+  const strictLivePricingParam = String(url.searchParams.get("strictLivePricing") ?? "")
+    .toLowerCase()
+    .trim();
+  const strictLivePricing = strictLivePricingParam
+    ? ["1", "true", "yes"].includes(strictLivePricingParam)
+    : config.media_type === "4k-uhd" && mode === "discount";
+
+  const useStrictLivePricing = strictLivePricing && config.media_type === "4k-uhd" && mode === "discount";
+
+  const defaultStalePruneHours = config.media_type === "4k-uhd" && mode === "discount" ? 24 * 3 : 0;
   const stalePruneHoursParam = Number(url.searchParams.get("stalePruneHours") ?? String(defaultStalePruneHours));
   const stalePruneHours = Number.isFinite(stalePruneHoursParam)
     ? Math.max(0, Math.min(stalePruneHoursParam, 24 * 365))
@@ -2521,6 +2530,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     stale_rows_eligible: 0,
     stale_rows_pruned: 0,
     stale_prune_error: null as string | null,
+    strict_live_pricing: useStrictLivePricing,
+    filtered_without_live_pricing: 0,
   };
 
   const supabase = getSupabaseAdmin();
@@ -2572,21 +2583,28 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
 
   try {
     if (revalidateActive) {
-      try {
-        stats.revalidate_active = await revalidateActiveDeals({
-          mediaType: config.media_type,
-          feedKey,
-          minDiscount,
-          limit: activeLimit,
-          offset: activeOffset,
-          includeAll: activeIncludeAll,
-        });
-      } catch (e: any) {
-        stats.revalidate_active = { ok: false, error: e?.message ?? String(e) };
-      }
+      if (useStrictLivePricing) {
+        stats.revalidate_active = {
+          skipped: true,
+          reason: "strict_live_pricing_enabled",
+        };
+      } else {
+        try {
+          stats.revalidate_active = await revalidateActiveDeals({
+            mediaType: config.media_type,
+            feedKey,
+            minDiscount,
+            limit: activeLimit,
+            offset: activeOffset,
+            includeAll: activeIncludeAll,
+          });
+        } catch (e: any) {
+          stats.revalidate_active = { ok: false, error: e?.message ?? String(e) };
+        }
 
-      if (containsAssociateNotEligible(stats.revalidate_active)) {
-        stats.paapi_associate_not_eligible = true;
+        if (containsAssociateNotEligible(stats.revalidate_active)) {
+          stats.paapi_associate_not_eligible = true;
+        }
       }
 
       if (revalidateOnly) {
@@ -2823,6 +2841,11 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           const existing = existingDealsByAsin.get(asin);
           const bucketed = bucketedByAsin.get(asin);
           const pricing = pricingByAsin.get(asin) ?? extractCurrentPricing(item);
+          const hasLivePrice = pricing.priceCents != null;
+          if (useStrictLivePricing && !hasLivePrice) {
+            stats.filtered_without_live_pricing += 1;
+            continue;
+          }
           let priceCents = pricing.priceCents;
 
           const historyLatest = historyLatestByAsin.get(asin);
@@ -2842,6 +2865,47 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
           }
 
           if (priceCents == null) continue;
+
+          if (useStrictLivePricing) {
+            const strictListCents = pricing.listCents ?? null;
+            const strictDiscountPct = pricing.discountPct ?? computeDiscountPct(priceCents, strictListCents);
+
+            if (strictDiscountPct == null || strictDiscountPct < minDiscount) {
+              stats.filtered_under_min_discount += 1;
+              continue;
+            }
+
+            if (pricing.hadDiscountSignal) stats.items_with_discount_data += 1;
+
+            const rank = Number(item?.BrowseNodeInfo?.WebsiteSalesRank?.SalesRank) || null;
+            const browseNodeId = getPrimaryBrowseNodeId(item);
+            const artist = extractArtist(item) ?? existing?.artist ?? null;
+
+            keep.push({
+              asin,
+              title: item?.ItemInfo?.Title?.DisplayValue ?? existing?.title ?? asin,
+              artist,
+              image_url: item?.Images?.Primary?.Large?.URL ?? existing?.image_url ?? null,
+              amazon_url: buildAmazonUrl(asin),
+              price_cents: priceCents,
+              list_price_cents: strictListCents,
+              currency: pricing.currency ?? existing?.currency ?? null,
+              discount_pct: strictDiscountPct,
+              category: "media",
+              media_type: config.media_type,
+              feed_key: feedKey,
+              sales_rank: rank,
+              genre: null,
+              browse_node_id: browseNodeId,
+              updated_at: now,
+              last_seen_at: now,
+              sync_id: syncId,
+            });
+
+            seen.add(asin);
+            stats.kept += 1;
+            continue;
+          }
 
           let listCents = pricing.listCents ?? existing?.list_price_cents ?? null;
           if (listCents == null && historyLatest) {
@@ -3014,7 +3078,10 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     }
 
     if (mode === "discount" && keep.length === 0) {
-      if (preferBucketedRecoveryFor4k) {
+      if (useStrictLivePricing) {
+        stats.bootstrap_from_existing = { skipped: true, reason: "strict_live_pricing_enabled" };
+        stats.bootstrap_from_tracked = { skipped: true, reason: "strict_live_pricing_enabled" };
+      } else if (preferBucketedRecoveryFor4k) {
         stats.bootstrap_from_existing = {
           skipped: true,
           reason: "prefer_bucketed_recovery_4k_no_live_pricing",
@@ -3168,7 +3235,8 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       mode === "discount" &&
       keep.length === 0 &&
       config.media_type === "4k-uhd" &&
-      stats.paapi_associate_not_eligible
+      stats.paapi_associate_not_eligible &&
+      !useStrictLivePricing
     ) {
       try {
         const historyPoolBootstrap = await bootstrapFromTrackedHistoryPool({
@@ -3215,7 +3283,7 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
       }
     }
 
-    if (mode === "discount" && keep.length < bootstrapLimit && config.media_type === "4k-uhd") {
+    if (mode === "discount" && keep.length < bootstrapLimit && config.media_type === "4k-uhd" && !useStrictLivePricing) {
       const keepBeforeBucketed = keep.length;
       const bucketedTopUpLimit = Math.max(1, bootstrapLimit - keepBeforeBucketed);
       if (degradedNoLivePricing && !degradedAsWarning) {

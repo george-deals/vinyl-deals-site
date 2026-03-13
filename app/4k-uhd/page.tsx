@@ -6,7 +6,7 @@ export const revalidate = 60;
 
 const FEED_KEY = "discount-15";
 const MIN_DISCOUNT = 15;
-const FOURK_FRESHNESS_HOURS = Math.max(24, Math.min(Number(process.env.FOURK_PAGE_FRESHNESS_HOURS ?? "168"), 24 * 90));
+const FOURK_FRESHNESS_HOURS = Math.max(12, Math.min(Number(process.env.FOURK_PAGE_FRESHNESS_HOURS ?? "72"), 24 * 90));
 
 type Deal = {
   asin: string;
