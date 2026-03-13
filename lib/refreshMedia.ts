@@ -2437,6 +2437,12 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     ? ["1", "true", "yes"].includes(degradedAsWarningParam)
     : config.media_type === "4k-uhd" && mode === "discount";
 
+  const defaultStalePruneHours = config.media_type === "4k-uhd" && mode === "discount" ? 24 * 14 : 0;
+  const stalePruneHoursParam = Number(url.searchParams.get("stalePruneHours") ?? String(defaultStalePruneHours));
+  const stalePruneHours = Number.isFinite(stalePruneHoursParam)
+    ? Math.max(0, Math.min(stalePruneHoursParam, 24 * 365))
+    : defaultStalePruneHours;
+
   const now = new Date().toISOString();
   const syncId = randomUUID();
   const requestStartedAtMs = Date.now();
@@ -2510,6 +2516,11 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     paapi_associate_not_eligible_hits: 0,
     degraded_no_live_pricing: false,
     degraded_reason: null as string | null,
+    stale_prune_hours: stalePruneHours,
+    stale_prune_before: null as string | null,
+    stale_rows_eligible: 0,
+    stale_rows_pruned: 0,
+    stale_prune_error: null as string | null,
   };
 
   const supabase = getSupabaseAdmin();
@@ -3434,6 +3445,41 @@ export async function refreshMedia(req: Request, config: MediaConfig) {
     if (keep.length) {
       await upsertChunked(keep);
       saved = keep.length;
+    }
+
+    if (mode === "discount" && stalePruneHours > 0) {
+      const staleBeforeIso = new Date(Date.now() - stalePruneHours * 60 * 60 * 1000).toISOString();
+      stats.stale_prune_before = staleBeforeIso;
+
+      try {
+        const { count: staleCount, error: staleCountError } = await supabase
+          .from("deals")
+          .select("asin", { count: "exact", head: true })
+          .eq("media_type", config.media_type)
+          .eq("feed_key", feedKey)
+          .lt("last_seen_at", staleBeforeIso);
+
+        if (staleCountError) throw new Error(staleCountError.message);
+
+        const staleRowsEligible = typeof staleCount === "number" ? staleCount : 0;
+        stats.stale_rows_eligible = staleRowsEligible;
+
+        if (staleRowsEligible > 0) {
+          const { error: staleDeleteError } = await supabase
+            .from("deals")
+            .delete()
+            .eq("media_type", config.media_type)
+            .eq("feed_key", feedKey)
+            .lt("last_seen_at", staleBeforeIso);
+
+          if (staleDeleteError) throw new Error(staleDeleteError.message);
+          stats.stale_rows_pruned = staleRowsEligible;
+        }
+      } catch (e: any) {
+        const msg = e?.message ?? String(e);
+        stats.stale_prune_error = msg;
+        errors.push({ kind: "stale_prune_failed", error: msg, stale_before: staleBeforeIso });
+      }
     }
 
     try {
