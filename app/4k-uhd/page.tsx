@@ -24,6 +24,7 @@ type Deal = {
 };
 
 type DiscountFilter = "all" | "15-20" | "20-30" | "30-40" | "40-50" | "50plus";
+type PriceFilter = "all" | "under15" | "15-20" | "20-30" | "30-40" | "40-50" | "50plus";
 
 function money(cents: number | null, currency: string | null) {
   if (cents == null) return null;
@@ -32,7 +33,7 @@ function money(cents: number | null, currency: string | null) {
   return cur === "USD" ? `$${val}` : `${val} ${cur}`;
 }
 
-function parseFilter(v: unknown): DiscountFilter {
+function parseDiscountFilter(v: unknown): DiscountFilter {
   if (v === "15-20") return "15-20";
   if (v === "20-30") return "20-30";
   if (v === "30-40") return "30-40";
@@ -41,7 +42,17 @@ function parseFilter(v: unknown): DiscountFilter {
   return "all";
 }
 
-function filterLabel(f: DiscountFilter) {
+function parsePriceFilter(v: unknown): PriceFilter {
+  if (v === "under15") return "under15";
+  if (v === "15-20") return "15-20";
+  if (v === "20-30") return "20-30";
+  if (v === "30-40") return "30-40";
+  if (v === "40-50") return "40-50";
+  if (v === "50plus") return "50plus";
+  return "all";
+}
+
+function discountFilterLabel(f: DiscountFilter) {
   switch (f) {
     case "15-20":
       return "15%–20% OFF";
@@ -56,6 +67,40 @@ function filterLabel(f: DiscountFilter) {
     default:
       return "All (15%+)";
   }
+}
+
+function priceFilterLabel(f: PriceFilter) {
+  switch (f) {
+    case "under15":
+      return "Under $15";
+    case "15-20":
+      return "$15–$20";
+    case "20-30":
+      return "$20–$30";
+    case "30-40":
+      return "$30–$40";
+    case "40-50":
+      return "$40–$50";
+    case "50plus":
+      return "$50+";
+    default:
+      return "All Prices";
+  }
+}
+
+function buildFilterHref(basePath: string, discount: DiscountFilter, price: PriceFilter) {
+  const params = new URLSearchParams();
+  if (discount !== "all") params.set("discount", discount);
+  if (price !== "all") params.set("price", price);
+  const qs = params.toString();
+  return qs ? `${basePath}?${qs}` : basePath;
+}
+
+function combinedFilterLabel(discount: DiscountFilter, price: PriceFilter) {
+  const labels: string[] = [];
+  if (discount !== "all") labels.push(discountFilterLabel(discount));
+  if (price !== "all") labels.push(priceFilterLabel(price));
+  return labels.length ? labels.join(" • ") : "All 15%+ Deals";
 }
 
 async function getLastUpdated(mediaType: string, feedKey: string) {
@@ -82,17 +127,21 @@ export async function generateMetadata({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }): Promise<Metadata> {
   const sp = await searchParams;
-  const filter = parseFilter(sp.discount);
+  const discount = parseDiscountFilter(sp.discount);
+  const price = parsePriceFilter(sp.price);
+  const activeFilterLabel = combinedFilterLabel(discount, price);
 
   const base = "4K UHD Deals";
   const title =
-    filter === "all" ? `${base} (Amazon US)` : `${filterLabel(filter)} — ${base}`;
+    discount === "all" && price === "all"
+      ? `${base} (Amazon US)`
+      : `${activeFilterLabel} — ${base}`;
   const description =
-    filter === "all"
+    discount === "all" && price === "all"
       ? "Live 4K UHD deals with 15%+ discounts from Amazon, sorted by highest discount then sales rank."
-      : `Live 4K UHD deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
+      : `Live 4K UHD deals filtered to ${activeFilterLabel}, sorted by sales rank.`;
 
-  const canonical = filter === "all" ? "/4k-uhd" : `/4k-uhd?discount=${filter}`;
+  const canonical = buildFilterHref("/4k-uhd", discount, price);
 
   return {
     title,
@@ -137,12 +186,14 @@ export default async function FourKUhdDealsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const sp = await searchParams;
-  const filter = parseFilter(sp.discount);
+  const discountFilter = parseDiscountFilter(sp.discount);
+  const priceFilter = parsePriceFilter(sp.price);
 
   const lastUpdatedIso = await getLastUpdated("4k-uhd", FEED_KEY);
 
   const supabase = getSupabaseAdmin();
-  const freshSinceIso = new Date(Date.now() - FOURK_FRESHNESS_HOURS * 60 * 60 * 1000).toISOString();
+  const nowIso = new Date().toISOString();
+  const freshSinceIso = new Date(Date.parse(nowIso) - FOURK_FRESHNESS_HOURS * 60 * 60 * 1000).toISOString();
 
   let q = supabase
     .from("deals")
@@ -157,13 +208,20 @@ export default async function FourKUhdDealsPage({
     q = q.gte("last_seen_at", freshSinceIso);
   }
 
-  if (filter === "15-20") q = q.gte("discount_pct", 15).lt("discount_pct", 20);
-  if (filter === "20-30") q = q.gte("discount_pct", 20).lt("discount_pct", 30);
-  if (filter === "30-40") q = q.gte("discount_pct", 30).lt("discount_pct", 40);
-  if (filter === "40-50") q = q.gte("discount_pct", 40).lt("discount_pct", 50);
-  if (filter === "50plus") q = q.gte("discount_pct", 50);
+  if (discountFilter === "15-20") q = q.gte("discount_pct", 15).lt("discount_pct", 20);
+  if (discountFilter === "20-30") q = q.gte("discount_pct", 20).lt("discount_pct", 30);
+  if (discountFilter === "30-40") q = q.gte("discount_pct", 30).lt("discount_pct", 40);
+  if (discountFilter === "40-50") q = q.gte("discount_pct", 40).lt("discount_pct", 50);
+  if (discountFilter === "50plus") q = q.gte("discount_pct", 50);
 
-  if (filter === "all") {
+  if (priceFilter === "under15") q = q.lt("price_cents", 1500);
+  if (priceFilter === "15-20") q = q.gte("price_cents", 1500).lt("price_cents", 2000);
+  if (priceFilter === "20-30") q = q.gte("price_cents", 2000).lt("price_cents", 3000);
+  if (priceFilter === "30-40") q = q.gte("price_cents", 3000).lt("price_cents", 4000);
+  if (priceFilter === "40-50") q = q.gte("price_cents", 4000).lt("price_cents", 5000);
+  if (priceFilter === "50plus") q = q.gte("price_cents", 5000);
+
+  if (discountFilter === "all" && priceFilter === "all") {
     q = q
       .order("discount_pct", { ascending: false, nullsFirst: false })
       .order("sales_rank", { ascending: true, nullsFirst: false });
@@ -180,7 +238,7 @@ export default async function FourKUhdDealsPage({
       <div className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold tracking-tight">4K UHD Deals</h1>
         <p className="text-slate-700">
-          15%+ off 4K UHD deals (default sort: highest discount, then sales rank). Filter by discount range.
+          15%+ off 4K UHD deals (default sort: highest discount, then sales rank). Filter by discount and price range.
         </p>
         <p className="text-sm text-slate-600">
           Last Updated:{" "}
@@ -188,13 +246,24 @@ export default async function FourKUhdDealsPage({
         </p>
 
         {/* Filters */}
-        <div className="mt-6 flex flex-wrap gap-2">
-          {chip("15%+ OFF", "/4k-uhd", filter === "all")}
-          {chip("15%–20% OFF", "/4k-uhd?discount=15-20", filter === "15-20")}
-          {chip("20%–30% OFF", "/4k-uhd?discount=20-30", filter === "20-30")}
-          {chip("30%–40% OFF", "/4k-uhd?discount=30-40", filter === "30-40")}
-          {chip("40%–50% OFF", "/4k-uhd?discount=40-50", filter === "40-50")}
-          {chip("50%+ OFF", "/4k-uhd?discount=50plus", filter === "50plus")}
+        <div className="mt-6 space-y-3">
+          <div className="flex flex-wrap gap-2">
+            {chip("15%+ OFF", buildFilterHref("/4k-uhd", "all", priceFilter), discountFilter === "all")}
+            {chip("15%–20% OFF", buildFilterHref("/4k-uhd", "15-20", priceFilter), discountFilter === "15-20")}
+            {chip("20%–30% OFF", buildFilterHref("/4k-uhd", "20-30", priceFilter), discountFilter === "20-30")}
+            {chip("30%–40% OFF", buildFilterHref("/4k-uhd", "30-40", priceFilter), discountFilter === "30-40")}
+            {chip("40%–50% OFF", buildFilterHref("/4k-uhd", "40-50", priceFilter), discountFilter === "40-50")}
+            {chip("50%+ OFF", buildFilterHref("/4k-uhd", "50plus", priceFilter), discountFilter === "50plus")}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {chip("All Prices", buildFilterHref("/4k-uhd", discountFilter, "all"), priceFilter === "all")}
+            {chip("Under $15", buildFilterHref("/4k-uhd", discountFilter, "under15"), priceFilter === "under15")}
+            {chip("$15–$20", buildFilterHref("/4k-uhd", discountFilter, "15-20"), priceFilter === "15-20")}
+            {chip("$20–$30", buildFilterHref("/4k-uhd", discountFilter, "20-30"), priceFilter === "20-30")}
+            {chip("$30–$40", buildFilterHref("/4k-uhd", discountFilter, "30-40"), priceFilter === "30-40")}
+            {chip("$40–$50", buildFilterHref("/4k-uhd", discountFilter, "40-50"), priceFilter === "40-50")}
+            {chip("$50+", buildFilterHref("/4k-uhd", discountFilter, "50plus"), priceFilter === "50plus")}
+          </div>
         </div>
 
         {!lastUpdatedIso ? (
@@ -210,7 +279,7 @@ export default async function FourKUhdDealsPage({
         ) : deals.length === 0 ? (
           <div className="mt-6 rounded-lg border bg-white p-6">
             <p className="text-slate-700">
-              No results for <strong>{filterLabel(filter)}</strong>. Try another filter.
+              No results for <strong>{combinedFilterLabel(discountFilter, priceFilter)}</strong>. Try another filter.
             </p>
           </div>
         ) : (

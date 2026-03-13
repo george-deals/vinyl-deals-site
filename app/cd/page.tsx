@@ -12,7 +12,6 @@ export const revalidate = 60;
 
 const FEED_KEY = "discount-15";
 const MIN_DISCOUNT = 15;
-const STALE_DAYS = 3;
 
 type Deal = {
   asin: string;
@@ -28,6 +27,79 @@ type Deal = {
   sales_rank: number | null;
   updated_at: string;
 };
+
+type DiscountFilter = "all" | "15-20" | "20-30" | "30-40" | "40-50" | "50plus";
+type PriceFilter = "all" | "under15" | "15-20" | "20-30" | "30-40" | "40-50" | "50plus";
+
+function parseDiscountFilter(v: unknown): DiscountFilter {
+  if (v === "15-20") return "15-20";
+  if (v === "20-30") return "20-30";
+  if (v === "30-40") return "30-40";
+  if (v === "40-50") return "40-50";
+  if (v === "50plus") return "50plus";
+  return "all";
+}
+
+function parsePriceFilter(v: unknown): PriceFilter {
+  if (v === "under15") return "under15";
+  if (v === "15-20") return "15-20";
+  if (v === "20-30") return "20-30";
+  if (v === "30-40") return "30-40";
+  if (v === "40-50") return "40-50";
+  if (v === "50plus") return "50plus";
+  return "all";
+}
+
+function discountFilterLabel(f: DiscountFilter) {
+  switch (f) {
+    case "15-20":
+      return "15%–20% OFF";
+    case "20-30":
+      return "20%–30% OFF";
+    case "30-40":
+      return "30%–40% OFF";
+    case "40-50":
+      return "40%–50% OFF";
+    case "50plus":
+      return "50%+ OFF";
+    default:
+      return "All (15%+)";
+  }
+}
+
+function priceFilterLabel(f: PriceFilter) {
+  switch (f) {
+    case "under15":
+      return "Under $15";
+    case "15-20":
+      return "$15–$20";
+    case "20-30":
+      return "$20–$30";
+    case "30-40":
+      return "$30–$40";
+    case "40-50":
+      return "$40–$50";
+    case "50plus":
+      return "$50+";
+    default:
+      return "All Prices";
+  }
+}
+
+function buildFilterHref(basePath: string, discount: DiscountFilter, price: PriceFilter) {
+  const params = new URLSearchParams();
+  if (discount !== "all") params.set("discount", discount);
+  if (price !== "all") params.set("price", price);
+  const qs = params.toString();
+  return qs ? `${basePath}?${qs}` : basePath;
+}
+
+function combinedFilterLabel(discount: DiscountFilter, price: PriceFilter) {
+  const labels: string[] = [];
+  if (discount !== "all") labels.push(discountFilterLabel(discount));
+  if (price !== "all") labels.push(priceFilterLabel(price));
+  return labels.length ? labels.join(" • ") : "All (15%+)";
+}
 
 async function getLastUpdated(mediaType: string, feedKey: string) {
   const supabase = getSupabaseAdmin();
@@ -54,25 +126,62 @@ function money(cents: number | null, currency: string | null) {
   return cur === "USD" ? `$${val}` : `${val} ${cur}`;
 }
 
-export default async function CdTopDealsPage() {
+export default async function CdTopDealsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const sp = await searchParams;
+  const discountFilter = parseDiscountFilter(sp.discount);
+  const priceFilter = parsePriceFilter(sp.price);
+
   const lastUpdatedIso = await getLastUpdated("cd", FEED_KEY);
 
   const supabase = getSupabaseAdmin();
 
-  const { data, error } = await supabase
+  let q = supabase
     .from("deals")
     .select(
       "asin,title,artist,image_url,amazon_url,price_cents,list_price_cents,currency,discount_pct,media_type,sales_rank,updated_at"
     )
-.eq("media_type", "cd")
+    .eq("media_type", "cd")
     .eq("feed_key", FEED_KEY)
-    .gte("discount_pct", MIN_DISCOUNT)
+    .gte("discount_pct", MIN_DISCOUNT);
+
+  if (discountFilter === "15-20") q = q.gte("discount_pct", 15).lt("discount_pct", 20);
+  if (discountFilter === "20-30") q = q.gte("discount_pct", 20).lt("discount_pct", 30);
+  if (discountFilter === "30-40") q = q.gte("discount_pct", 30).lt("discount_pct", 40);
+  if (discountFilter === "40-50") q = q.gte("discount_pct", 40).lt("discount_pct", 50);
+  if (discountFilter === "50plus") q = q.gte("discount_pct", 50);
+
+  if (priceFilter === "under15") q = q.lt("price_cents", 1500);
+  if (priceFilter === "15-20") q = q.gte("price_cents", 1500).lt("price_cents", 2000);
+  if (priceFilter === "20-30") q = q.gte("price_cents", 2000).lt("price_cents", 3000);
+  if (priceFilter === "30-40") q = q.gte("price_cents", 3000).lt("price_cents", 4000);
+  if (priceFilter === "40-50") q = q.gte("price_cents", 4000).lt("price_cents", 5000);
+  if (priceFilter === "50plus") q = q.gte("price_cents", 5000);
+
+  const { data, error } = await q
     .order("sales_rank", { ascending: true, nullsFirst: false })
     .order("discount_pct", { ascending: false, nullsFirst: false })
     .order("updated_at", { ascending: false })
     .limit(500);
 
-  const deals: Deal[] = (data as any) || [];
+  const deals: Deal[] = (data ?? []) as Deal[];
+
+  const chip = (label: string, href: string, active: boolean) => (
+    <Link
+      href={href}
+      className={[
+        "inline-flex items-center rounded-full border px-3 py-1 text-sm",
+        active
+          ? "bg-slate-900 text-white border-slate-900"
+          : "bg-white text-slate-700 hover:text-slate-900 hover:bg-slate-50",
+      ].join(" ")}
+    >
+      {label}
+    </Link>
+  );
 
   return (
     <main className="min-h-screen px-6 py-10">
@@ -80,12 +189,32 @@ export default async function CdTopDealsPage() {
         <div className="space-y-2">
   <h1 className="text-3xl font-bold">CD Deals</h1>
   <p className="mt-2 text-slate-600">
-    Only deals confirmed on the latest sync are shown.
+    Filter CD deals by discount and price.
   </p>
   <div className="mt-2 text-sm text-slate-600">
     Last Updated: <strong>{lastUpdatedIso ? formatPT(lastUpdatedIso) : "—"}</strong>
   </div>
 </div>
+
+        <div className="mt-6 space-y-3">
+          <div className="flex flex-wrap gap-2">
+            {chip("15%+ OFF", buildFilterHref("/cd", "all", priceFilter), discountFilter === "all")}
+            {chip("15%–20% OFF", buildFilterHref("/cd", "15-20", priceFilter), discountFilter === "15-20")}
+            {chip("20%–30% OFF", buildFilterHref("/cd", "20-30", priceFilter), discountFilter === "20-30")}
+            {chip("30%–40% OFF", buildFilterHref("/cd", "30-40", priceFilter), discountFilter === "30-40")}
+            {chip("40%–50% OFF", buildFilterHref("/cd", "40-50", priceFilter), discountFilter === "40-50")}
+            {chip("50%+ OFF", buildFilterHref("/cd", "50plus", priceFilter), discountFilter === "50plus")}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {chip("All Prices", buildFilterHref("/cd", discountFilter, "all"), priceFilter === "all")}
+            {chip("Under $15", buildFilterHref("/cd", discountFilter, "under15"), priceFilter === "under15")}
+            {chip("$15–$20", buildFilterHref("/cd", discountFilter, "15-20"), priceFilter === "15-20")}
+            {chip("$20–$30", buildFilterHref("/cd", discountFilter, "20-30"), priceFilter === "20-30")}
+            {chip("$30–$40", buildFilterHref("/cd", discountFilter, "30-40"), priceFilter === "30-40")}
+            {chip("$40–$50", buildFilterHref("/cd", discountFilter, "40-50"), priceFilter === "40-50")}
+            {chip("$50+", buildFilterHref("/cd", discountFilter, "50plus"), priceFilter === "50plus")}
+          </div>
+        </div>
 
 
         {error ? (
@@ -94,12 +223,15 @@ export default async function CdTopDealsPage() {
           </div>
         ) : deals.length === 0 ? (
           <div className="mt-6 rounded-lg border bg-white p-6">
-            <p className="text-slate-700">No results yet.</p>
+            <p className="text-slate-700">
+              No results for <strong>{combinedFilterLabel(discountFilter, priceFilter)}</strong>. Try another filter.
+            </p>
           </div>
         ) : (
           <>
             <div className="mt-6 text-sm text-slate-600">
-              Showing <strong>{deals.length}</strong> results (15%+)
+              Showing <strong>{deals.length}</strong> results for{" "}
+              <strong>{combinedFilterLabel(discountFilter, priceFilter)}</strong>
             </div>
 
             <ul className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 2xl:grid-cols-5">

@@ -23,6 +23,7 @@ type Deal = {
 };
 
 type DiscountFilter = "all" | "15-20" | "20-30" | "30-40" | "40-50" | "50plus";
+type PriceFilter = "all" | "under15" | "15-20" | "20-30" | "30-40" | "40-50" | "50plus";
 
 function money(cents: number | null, currency: string | null) {
   if (cents == null) return null;
@@ -31,7 +32,7 @@ function money(cents: number | null, currency: string | null) {
   return cur === "USD" ? `$${val}` : `${val} ${cur}`;
 }
 
-function parseFilter(v: unknown): DiscountFilter {
+function parseDiscountFilter(v: unknown): DiscountFilter {
   if (v === "15-20") return "15-20";
   if (v === "20-30") return "20-30";
   if (v === "30-40") return "30-40";
@@ -40,7 +41,17 @@ function parseFilter(v: unknown): DiscountFilter {
   return "all";
 }
 
-function filterLabel(f: DiscountFilter) {
+function parsePriceFilter(v: unknown): PriceFilter {
+  if (v === "under15") return "under15";
+  if (v === "15-20") return "15-20";
+  if (v === "20-30") return "20-30";
+  if (v === "30-40") return "30-40";
+  if (v === "40-50") return "40-50";
+  if (v === "50plus") return "50plus";
+  return "all";
+}
+
+function discountFilterLabel(f: DiscountFilter) {
   switch (f) {
     case "15-20":
       return "15%–20% OFF";
@@ -55,6 +66,40 @@ function filterLabel(f: DiscountFilter) {
     default:
       return "All (15%+)";
   }
+}
+
+function priceFilterLabel(f: PriceFilter) {
+  switch (f) {
+    case "under15":
+      return "Under $15";
+    case "15-20":
+      return "$15–$20";
+    case "20-30":
+      return "$20–$30";
+    case "30-40":
+      return "$30–$40";
+    case "40-50":
+      return "$40–$50";
+    case "50plus":
+      return "$50+";
+    default:
+      return "All Prices";
+  }
+}
+
+function buildFilterHref(basePath: string, discount: DiscountFilter, price: PriceFilter) {
+  const params = new URLSearchParams();
+  if (discount !== "all") params.set("discount", discount);
+  if (price !== "all") params.set("price", price);
+  const qs = params.toString();
+  return qs ? `${basePath}?${qs}` : basePath;
+}
+
+function combinedFilterLabel(discount: DiscountFilter, price: PriceFilter) {
+  const labels: string[] = [];
+  if (discount !== "all") labels.push(discountFilterLabel(discount));
+  if (price !== "all") labels.push(priceFilterLabel(price));
+  return labels.length ? labels.join(" • ") : "All (15%+)";
 }
 
 async function getLastUpdated(mediaType: string, feedKey: string) {
@@ -81,17 +126,21 @@ export async function generateMetadata({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }): Promise<Metadata> {
   const sp = await searchParams;
-  const filter = parseFilter(sp.discount);
+  const discount = parseDiscountFilter(sp.discount);
+  const price = parsePriceFilter(sp.price);
+  const activeFilterLabel = combinedFilterLabel(discount, price);
 
   const base = "Blu-ray Deals";
   const title =
-    filter === "all" ? `${base} (Amazon US)` : `${filterLabel(filter)} — ${base}`;
+    discount === "all" && price === "all"
+      ? `${base} (Amazon US)`
+      : `${activeFilterLabel} — ${base}`;
   const description =
-    filter === "all"
+    discount === "all" && price === "all"
       ? "Live Amazon Blu-ray deals with 15%+ discounts, sorted by sales rank."
-      : `Live Amazon Blu-ray deals filtered to ${filterLabel(filter)}, sorted by sales rank.`;
+      : `Live Amazon Blu-ray deals filtered to ${activeFilterLabel}, sorted by sales rank.`;
 
-  const canonical = filter === "all" ? "/blu-ray" : `/blu-ray?discount=${filter}`;
+  const canonical = buildFilterHref("/blu-ray", discount, price);
 
   return {
     title,
@@ -136,7 +185,8 @@ export default async function BluRayDealsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const sp = await searchParams;
-  const filter = parseFilter(sp.discount);
+  const discountFilter = parseDiscountFilter(sp.discount);
+  const priceFilter = parsePriceFilter(sp.price);
 
   const lastUpdatedIso = await getLastUpdated("blu-ray", FEED_KEY);
 
@@ -151,11 +201,18 @@ export default async function BluRayDealsPage({
     .eq("feed_key", FEED_KEY)
     .gte("discount_pct", MIN_DISCOUNT);
 
-  if (filter === "15-20") q = q.gte("discount_pct", 15).lt("discount_pct", 20);
-  if (filter === "20-30") q = q.gte("discount_pct", 20).lt("discount_pct", 30);
-  if (filter === "30-40") q = q.gte("discount_pct", 30).lt("discount_pct", 40);
-  if (filter === "40-50") q = q.gte("discount_pct", 40).lt("discount_pct", 50);
-  if (filter === "50plus") q = q.gte("discount_pct", 50);
+  if (discountFilter === "15-20") q = q.gte("discount_pct", 15).lt("discount_pct", 20);
+  if (discountFilter === "20-30") q = q.gte("discount_pct", 20).lt("discount_pct", 30);
+  if (discountFilter === "30-40") q = q.gte("discount_pct", 30).lt("discount_pct", 40);
+  if (discountFilter === "40-50") q = q.gte("discount_pct", 40).lt("discount_pct", 50);
+  if (discountFilter === "50plus") q = q.gte("discount_pct", 50);
+
+  if (priceFilter === "under15") q = q.lt("price_cents", 1500);
+  if (priceFilter === "15-20") q = q.gte("price_cents", 1500).lt("price_cents", 2000);
+  if (priceFilter === "20-30") q = q.gte("price_cents", 2000).lt("price_cents", 3000);
+  if (priceFilter === "30-40") q = q.gte("price_cents", 3000).lt("price_cents", 4000);
+  if (priceFilter === "40-50") q = q.gte("price_cents", 4000).lt("price_cents", 5000);
+  if (priceFilter === "50plus") q = q.gte("price_cents", 5000);
 
   const { data, error } = await q
     .order("sales_rank", { ascending: true, nullsFirst: false })
@@ -176,13 +233,24 @@ export default async function BluRayDealsPage({
         </p>
 
         {/* Filters */}
-        <div className="mt-6 flex flex-wrap gap-2">
-          {chip("15%+ OFF", "/blu-ray", filter === "all")}
-          {chip("15%–20% OFF", "/blu-ray?discount=15-20", filter === "15-20")}
-          {chip("20%–30% OFF", "/blu-ray?discount=20-30", filter === "20-30")}
-          {chip("30%–40% OFF", "/blu-ray?discount=30-40", filter === "30-40")}
-          {chip("40%–50% OFF", "/blu-ray?discount=40-50", filter === "40-50")}
-          {chip("50%+ OFF", "/blu-ray?discount=50plus", filter === "50plus")}
+        <div className="mt-6 space-y-3">
+          <div className="flex flex-wrap gap-2">
+            {chip("15%+ OFF", buildFilterHref("/blu-ray", "all", priceFilter), discountFilter === "all")}
+            {chip("15%–20% OFF", buildFilterHref("/blu-ray", "15-20", priceFilter), discountFilter === "15-20")}
+            {chip("20%–30% OFF", buildFilterHref("/blu-ray", "20-30", priceFilter), discountFilter === "20-30")}
+            {chip("30%–40% OFF", buildFilterHref("/blu-ray", "30-40", priceFilter), discountFilter === "30-40")}
+            {chip("40%–50% OFF", buildFilterHref("/blu-ray", "40-50", priceFilter), discountFilter === "40-50")}
+            {chip("50%+ OFF", buildFilterHref("/blu-ray", "50plus", priceFilter), discountFilter === "50plus")}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {chip("All Prices", buildFilterHref("/blu-ray", discountFilter, "all"), priceFilter === "all")}
+            {chip("Under $15", buildFilterHref("/blu-ray", discountFilter, "under15"), priceFilter === "under15")}
+            {chip("$15–$20", buildFilterHref("/blu-ray", discountFilter, "15-20"), priceFilter === "15-20")}
+            {chip("$20–$30", buildFilterHref("/blu-ray", discountFilter, "20-30"), priceFilter === "20-30")}
+            {chip("$30–$40", buildFilterHref("/blu-ray", discountFilter, "30-40"), priceFilter === "30-40")}
+            {chip("$40–$50", buildFilterHref("/blu-ray", discountFilter, "40-50"), priceFilter === "40-50")}
+            {chip("$50+", buildFilterHref("/blu-ray", discountFilter, "50plus"), priceFilter === "50plus")}
+          </div>
         </div>
 
         {!lastUpdatedIso ? (
@@ -198,7 +266,7 @@ export default async function BluRayDealsPage({
         ) : deals.length === 0 ? (
           <div className="mt-6 rounded-lg border bg-white p-6">
             <p className="text-slate-700">
-              No results for <strong>{filterLabel(filter)}</strong>. Try another filter.
+              No results for <strong>{combinedFilterLabel(discountFilter, priceFilter)}</strong>. Try another filter.
             </p>
           </div>
         ) : (
